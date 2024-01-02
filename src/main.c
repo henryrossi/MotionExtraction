@@ -26,10 +26,10 @@ int main(int argc, char *argv[]) {
     av_dump_format(formatContext, 0, argv[1], 0);
 
     // Now FormatContext->streams is an array of pointers, of size FormatContext->nb_streams
-    int i;
-    AVCodecContext *codecContextOriginal = NULL;
+    // int i;
+    // AVCodecContext *codecContextOriginal = NULL;
     AVCodecContext *codecContext = NULL;
-    AVCodec *decoder;
+    const AVCodec *decoder = NULL;
 
     // Find the "best" video stream 
     int ret = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0);
@@ -61,6 +61,15 @@ int main(int argc, char *argv[]) {
     // Allocate video frame
     Frame = av_frame_alloc();
     FrameRGB = av_frame_alloc();
+
+
+    // Clean up
+
+    av_frame_free(&Frame);
+    av_frame_free(&FrameRGB);
+
+    avcodec_free_context(&codecContext);
+    avformat_close_input(&formatContext);
 
     return 0;
 }
