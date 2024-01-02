@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS  = -g -Wall
 LFLAGS = -L/usr/local/Cellar/ffmpeg/6.0_2/lib
-LIBS = -lavcodec -lavformat
+LIBS =  -lavformat -lavcodec
 
 main: main.o
 	$(CC) $(CFLAGS) -o main main.o $(LFLAGS) $(LIBS)
