@@ -112,6 +112,7 @@ int main(int argc, char *argv[]) {
                 return ret;
             }
             outputStream->time_base = inputStream->time_base;
+        }
     }
 
     // Dump information about file into standard error
