@@ -93,6 +93,32 @@ int main(int argc, char *argv[]) {
             AVCodecContext *encoderContext = avcodec_alloc_context3(encoder);
             if (!encoderContext) AVERROR(ENOMEM);
 
+            if (decoderContext->codec_type == AVMEDIA_TYPE_VIDEO) {
+                encoderContext->height = decoderContext->height;
+                encoderContext->width = decoderContext->width;
+                encoderContext->sample_aspect_ratio = decoderContext->sample_aspect_ratio;
+                /* take first format from list of supported formats */
+                if (encoder->pix_fmts)
+                    encoderContext->pix_fmt = encoder->pix_fmts[0];
+                else
+                    encoderContext->pix_fmt = decoderContext->pix_fmt;
+                /* video time_base can be set to whatever is handy and supported by encoder */
+                /* this is a "theoretical" time base, before writing a frame you must convert
+                its timebase to the one actually used by the stream using av_packet_rescale_ts() */
+                encoderContext->time_base = av_inv_q(av_guess_frame_rate(inputFormatContext, inputStream, NULL));
+            } else {
+                encoderContext->sample_rate = decoderContext->sample_rate;
+                ret = av_channel_layout_copy(&encoderContext->ch_layout, &decoderContext->ch_layout);
+                if (ret < 0)
+                    return ret;
+                /* take first format from list of supported formats */
+                encoderContext->sample_fmt = encoder->sample_fmts[0];
+                encoderContext->time_base = (AVRational){1, encoderContext->sample_rate};
+            }
+ 
+            // if (outputFormatContext->oformat->flags & AVFMT_GLOBALHEADER)
+            //     encoderContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
             ret = avcodec_open2(encoderContext, encoder, NULL);
             if (ret < 0) return ret;
 
@@ -137,25 +163,31 @@ int main(int argc, char *argv[]) {
     /* Read Packets */
     AVPacket *packet = av_packet_alloc();
     if (!packet) return -1;
-    // while (1) {
-    //     if (av_read_frame(formatContext, packet) < 0)
-    //         break;
-    //     ret = avcodec_send_packet(codecContext, packet);
-    //     if (ret < 0)
-    //         break;
-    //     frame = av_frame_alloc();
-    //     while (ret >= 0) {
-    //         ret = avcodec_receive_frame(codecContext, frame); // spawns new thread
-    //         if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN))
-    //             break;
-    //         else if (ret < 0)
-    //             break; // clean up because there was an error
-    //     }
-    //     av_packet_unref(packet);
-    // }
+
+    while (1) {
+        ret = av_read_frame(inputFormatContext, packet);
+        if (ret < 0) break;
+
+        int streamIndex = packet->stream_index;
+        if (inputFormatContext->streams[streamIndex]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
+                                 outputFormatContext->streams[streamIndex]->time_base);
+            ret = av_interleaved_write_frame(outputFormatContext, packet);
+            printf("Writing Video packet... \n");
+            if (ret < 0) break;
+        } else {
+            av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
+                                 outputFormatContext->streams[streamIndex]->time_base);
+            ret = av_interleaved_write_frame(outputFormatContext, packet);
+            if (ret < 0) break;
+        }
+
+        av_packet_unref(packet);
+    }
+
 
     // av_write_frame();
-    // av_write_trailer();
+    av_write_trailer(outputFormatContext);
 
     /* Clean up */
     av_packet_free(&packet);
@@ -175,7 +207,7 @@ int main(int argc, char *argv[]) {
     if (outputFormatContext && !(outputFormatContext->oformat->flags & AVFMT_NOFILE))
         avio_closep(&outputFormatContext->pb);
 
-    avformat_free_context(&outputFormatContext);
+    avformat_free_context(outputFormatContext);
 
     return 0;
 }
