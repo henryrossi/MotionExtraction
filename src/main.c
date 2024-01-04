@@ -116,8 +116,8 @@ int main(int argc, char *argv[]) {
                 encoderContext->time_base = (AVRational){1, encoderContext->sample_rate};
             }
  
-            // if (outputFormatContext->oformat->flags & AVFMT_GLOBALHEADER)
-            //     encoderContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+            if (outputFormatContext->oformat->flags & AVFMT_GLOBALHEADER)
+                encoderContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
             ret = avcodec_open2(encoderContext, encoder, NULL);
             if (ret < 0) return ret;
@@ -127,6 +127,14 @@ int main(int argc, char *argv[]) {
  
             outputStream->time_base = encoderContext->time_base;
             streamContext[i].encoderContext = encoderContext;
+
+            ret = avcodec_parameters_copy(outputStream->codecpar, inputStream->codecpar);
+            if (ret < 0) {
+                printf("Copying parameters for stream #%u failed\n", i);
+                return ret;
+            }
+            outputStream->time_base = inputStream->time_base;
+
         } else if (decoderContext->codec_type == AVMEDIA_TYPE_UNKNOWN) {
             printf("Elementary stream #%d is of unknown type, cannot proceed\n", i);
             return AVERROR_INVALIDDATA;
@@ -173,7 +181,6 @@ int main(int argc, char *argv[]) {
             av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
                                  outputFormatContext->streams[streamIndex]->time_base);
             ret = av_interleaved_write_frame(outputFormatContext, packet);
-            printf("Writing Video packet... \n");
             if (ret < 0) break;
         } else {
             av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
