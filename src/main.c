@@ -172,6 +172,68 @@ int setUpEncoders(StreamCodecContext *streamContext, AVFormatContext *inputForma
 
 
 
+int decodeVideo(AVPacket *packet, AVFormatContext *inputFormatContext,AVFormatContext *outputFormatContext, 
+           StreamCodecContext *stream, int streamIndex) {
+    int ret = avcodec_send_packet(stream->decoderContext, packet);
+    if (ret < 0) {
+        printf("Sending Packet: The error code returned is %d\n", ret);
+        return ret;
+    }
+
+    while (ret >= 0) {
+        av_frame_unref(stream->decoderFrame);
+        ret = avcodec_receive_frame(stream->decoderContext, stream->decoderFrame);
+        if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN))
+            break;
+        else if (ret < 0) {
+            fprintf(stderr, "Recieving Frame: The error code returned is %d\n", ret);
+            return ret;
+        }
+                
+        stream->decoderFrame->pts = stream->decoderFrame->best_effort_timestamp;
+
+        av_packet_unref(packet);
+        ret = avcodec_send_frame(stream->encoderContext, stream->decoderFrame);
+        if (ret < 0) {
+            fprintf(stderr, "Sending Frame: The error code returned is %d\n", ret);
+            return ret;
+        }
+
+        while (ret >= 0) {
+            ret = avcodec_receive_packet(stream->encoderContext, packet);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) 
+                break;
+            else if (ret < 0) {
+                fprintf(stderr, "Receiving Packet from encoder returned error code %d\n", ret);
+                return ret;
+            }
+
+            packet->stream_index = streamIndex;
+            av_packet_rescale_ts(packet, stream->encoderContext->time_base, 
+                                 outputFormatContext->streams[streamIndex]->time_base);
+            ret = av_interleaved_write_frame(outputFormatContext, packet);
+            if (ret < 0) {
+                fprintf(stderr, "Writing Packet: The error code returned is %d\n", ret);
+                 return ret;
+            }
+        }
+
+        av_frame_unref(stream->decoderFrame);
+    }
+    return 0;
+}
+
+
+
+int remux(AVPacket *packet, AVFormatContext *inputFormatContext, 
+          AVFormatContext *outputFormatContext, int streamIndex) {
+    av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
+                         outputFormatContext->streams[streamIndex]->time_base);
+    return av_interleaved_write_frame(outputFormatContext, packet);
+}
+
+
+
 int main(int argc, char *argv[]) {
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <input file> <output file>\n", argv[0]);
@@ -231,54 +293,30 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    while (1) {
-        ret = av_read_frame(inputFormatContext, packet);
-        if (ret < 0) break;
-
+    while (av_read_frame(inputFormatContext, packet) >= 0) {
         int streamIndex = packet->stream_index;
-        // Set varible of current StreamContext here
+        StreamCodecContext *stream = &streamContext[streamIndex];
         
         if (inputFormatContext->streams[streamIndex]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-
-            ret = avcodec_send_packet(streamContext[streamIndex].decoderContext, packet);
-            if (ret < 0) return -1;
-
-            while (ret >= 0) {
-                ret = avcodec_receive_frame(streamContext[streamIndex].decoderContext, streamContext[streamIndex].decoderFrame);
-                if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN))
-                    break;
-                else if (ret < 0)
-                    return -1;
-                
-                streamContext[streamIndex].decoderFrame->pts = streamContext[streamIndex].decoderFrame->best_effort_timestamp;
-
-                av_packet_unref(packet);
-                ret = avcodec_send_frame(streamContext[streamIndex].encoderContext, streamContext[streamIndex].decoderFrame);
-                if (ret < 0) return -1;
-
-                while (ret >= 0) {
-                    ret = avcodec_receive_packet(streamContext[streamIndex].encoderContext, packet);
-                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-
-                    packet->stream_index = streamIndex;
-                    av_packet_rescale_ts(packet, streamContext[streamIndex].encoderContext->time_base, 
-                                 outputFormatContext->streams[streamIndex]->time_base);
-                    ret = av_interleaved_write_frame(outputFormatContext, packet);
-                }
-
-                av_frame_unref(streamContext[streamIndex].decoderFrame);
-                if (ret < 0) return -1;
-            }
-            
+            ret = decodeVideo(packet, inputFormatContext, outputFormatContext, stream, streamIndex);
+            if (ret < 0) return ret;
         } else {
-            av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
-                                 outputFormatContext->streams[streamIndex]->time_base);
-            ret = av_interleaved_write_frame(outputFormatContext, packet);
+            ret = remux(packet, inputFormatContext, outputFormatContext, streamIndex);
             if (ret < 0) break;
         }
 
         av_packet_unref(packet);
     }
+
+
+
+
+
+
+
+
+
+    printf("Time to flush the decoders and encoders\n");
 
     /* flush decoders and encoders */
     for (int i = 0; i < inputFormatContext->nb_streams; i++) {
@@ -339,6 +377,8 @@ int main(int argc, char *argv[]) {
 
 
     av_write_trailer(outputFormatContext);
+
+    printf("Done writing to outfile\n");
 
     /* Clean up */
 cleanUp:
