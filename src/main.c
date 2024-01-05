@@ -153,7 +153,6 @@ int setUpEncoders(StreamCodecContext *streamContext, AVFormatContext *inputForma
  
             outputStream->time_base = encoderContext->time_base;
             streamContext[i].encoderContext = encoderContext;
-            
         } 
     }
 
@@ -282,9 +281,63 @@ int main(int argc, char *argv[]) {
     }
 
     /* flush decoders and encoders */
+    for (int i = 0; i < inputFormatContext->nb_streams; i++) {
+        StreamCodecContext *stream = &streamContext[i];
+
+        if (inputFormatContext->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
+            continue;
+
+        ret = avcodec_send_packet(stream->decoderContext, NULL);
+        if (ret < 0)
+            goto cleanUp;
+        
+        while (ret >= 0) {
+            ret = avcodec_receive_frame(stream->decoderContext, stream->decoderFrame);
+            if (ret == AVERROR_EOF)
+                break;
+            else if (ret < 0)
+                goto cleanUp;
+
+            stream->decoderFrame->pts = stream->decoderFrame->best_effort_timestamp;
+
+            av_packet_unref(packet);
+            ret = avcodec_send_frame(stream->encoderContext, stream->decoderFrame);
+            if (ret < 0) return ret;
+
+            while (ret >= 0) {
+                ret = avcodec_receive_packet(stream->encoderContext, packet);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                    break;
+                packet->stream_index = i;
+                av_packet_rescale_ts(packet, stream->encoderContext->time_base, 
+                                 outputFormatContext->streams[i]->time_base);
+                ret = av_interleaved_write_frame(outputFormatContext, packet);
+            }
+
+            av_frame_unref(stream->decoderFrame);
+            if (ret < 0) return ret;
+        }
+
+        av_packet_unref(packet);
+ 
+        ret = avcodec_send_frame(stream->encoderContext, NULL);
+        if (ret < 0) return ret;
+
+        while (ret >= 0) {
+            ret = avcodec_receive_packet(stream->encoderContext, packet);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                break;
+            packet->stream_index = i;
+            av_packet_rescale_ts(packet, stream->encoderContext->time_base, 
+                                 outputFormatContext->streams[i]->time_base);
+            ret = av_interleaved_write_frame(outputFormatContext, packet);
+        }
+    }
 
 
-    // av_write_frame();
+
+
+
     av_write_trailer(outputFormatContext);
 
     /* Clean up */
