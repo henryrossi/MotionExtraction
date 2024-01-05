@@ -1,7 +1,8 @@
 #include <stdio.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <libavutil/mem.h> //?
+
+
 
 typedef struct StreamCodecContext {
     AVCodecContext *decoderContext;
@@ -10,54 +11,42 @@ typedef struct StreamCodecContext {
     AVFrame *decoderFrame;
 } StreamCodecContext;
 
-int main(int argc, char *argv[]) {
-    if (argc < 3) {
-        printf("Please supply input and output file\n");
-        return -1;
-    }
+
+
+int setUpDecoders(StreamCodecContext *streamContext, AVFormatContext *inputFormatContext, const char *filename) {
     int ret;
-
-    AVFormatContext *inputFormatContext = NULL;
-
-    /* Open Video File */
-    if (avformat_open_input(&inputFormatContext, argv[1], NULL, NULL) < 0) {
-        printf("Couldn't open video file\n");
-        return -1;
-    }
-
-    /* Analyze File */
-    // Retrieve Stream Information
-    if (avformat_find_stream_info(inputFormatContext, NULL) < 0) {
-        printf("Couldn't retrieve stream information of video file\n");
-        return -1;
-    }
-
-    /* Configure decoders */
-    // Now FormatContext->streams is an array of pointers, of size FormatContext->nb_streams
-    StreamCodecContext *streamContext = av_calloc(inputFormatContext->nb_streams, sizeof(*streamContext));
-    if (!streamContext) return AVERROR(ENOMEM);
-
+    /* Setting up decoder codecContext for each stream */
     for (int i = 0; i < inputFormatContext->nb_streams; i++) {
         AVStream *stream = inputFormatContext->streams[i];
 
         const AVCodec *decoder = avcodec_find_decoder(stream->codecpar->codec_id);
-        if (!decoder) return AVERROR_DECODER_NOT_FOUND;
+        if (!decoder) {
+            fprintf(stderr, "Couldn't find decoder\n");
+            return AVERROR_DECODER_NOT_FOUND;
+        }
 
         AVCodecContext *codecContext = NULL;
         codecContext = avcodec_alloc_context3(decoder);
-        if (!codecContext) return AVERROR(ENOMEM);
-
-        if (avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) return -1;
+        if (!codecContext) { 
+            fprintf(stderr, "Couldn't allocate decoder context\n");
+            return AVERROR(ENOMEM);
+        }
+        
+        ret = avcodec_parameters_to_context(codecContext, stream->codecpar);
+        if (ret < 0) {
+            fprintf(stderr, "Couldn't fill decoder context using stream codec parameters\n");
+            return ret;
+        }
 
         /* Inform the decoder about the timebase for the packet timestamps.
          * This is highly recommended, but not mandatory. */
         codecContext->pkt_timebase = stream->time_base;
 
-        if (codecContext->codec_type == AVMEDIA_TYPE_VIDEO || codecContext->codec_type == AVMEDIA_TYPE_AUDIO) {
+        if (codecContext->codec_type == AVMEDIA_TYPE_VIDEO) {
             ret = avcodec_open2(codecContext, decoder, NULL);
             if (ret < 0) {
-                printf("Cannot open video decoder\n");
-                return -1;
+                printf("Couldn't open decoder\n");
+                return ret;
             }
         }
 
@@ -65,33 +54,55 @@ int main(int argc, char *argv[]) {
  
         streamContext[i].prevDecoderFrame = av_frame_alloc();
         streamContext[i].decoderFrame = av_frame_alloc();
-        if (!streamContext[i].prevDecoderFrame || !streamContext[i].decoderFrame)
+        if (!streamContext[i].prevDecoderFrame || !streamContext[i].decoderFrame) {
+            fprintf(stderr, "Couldn't allocate decoder frames\n");
             return AVERROR(ENOMEM);
+        }
     }
 
     // Dump information about file into standard error
-    av_dump_format(inputFormatContext, 0, argv[1], 0);
+    av_dump_format(inputFormatContext, 0, filename, 0);
 
-    AVFormatContext *outputFormatContext = NULL;
-    avformat_alloc_output_context2(&outputFormatContext, NULL, NULL, argv[2]);
-    if (!outputFormatContext) {
-        printf("Could not create output context\n");
-        return -1;
-    }
+    return 0;
+}
 
+
+
+int setUpEncoders(StreamCodecContext *streamContext, AVFormatContext *inputFormatContext, 
+                  AVFormatContext *outputFormatContext, const char *filename) {
+    int ret;
     for (int i = 0; i < inputFormatContext->nb_streams; i++) {
         AVStream *outputStream = avformat_new_stream(outputFormatContext, NULL);
-        if (!outputStream) return -1;
+        if (!outputStream) {
+            fprintf(stderr, "Couldn't create new output stream\n");
+            return -1;
+        }
 
         AVStream *inputStream = inputFormatContext->streams[i];
         AVCodecContext *decoderContext = streamContext[i].decoderContext;
 
+        /* I am ONLY decoding/encoding video */
+
+        /* Check for unknown AVMEDIA TYPE */
+        if (decoderContext->codec_type == AVMEDIA_TYPE_UNKNOWN) {
+            fprintf(stderr, "Elementary stream #%d is of unknown type, cannot proceed\n", i);
+            return AVERROR_INVALIDDATA;
+        }
+
+        /* Setting up encoder codecContext for each audio and video stream 
+           I'm still very unfamiliar with what is going on here */
         if (decoderContext->codec_type == AVMEDIA_TYPE_VIDEO || decoderContext->codec_type == AVMEDIA_TYPE_AUDIO) {
             const AVCodec *encoder = avcodec_find_encoder(decoderContext->codec_id);
-            if (!encoder) return -1;
+            if (!encoder) { 
+                fprintf(stderr, "Couldn't find encoder\n");
+                return -1;
+            }
 
             AVCodecContext *encoderContext = avcodec_alloc_context3(encoder);
-            if (!encoderContext) AVERROR(ENOMEM);
+            if (!encoderContext) { 
+                fprintf(stderr, "Couldn't allocate encoder\n");
+                AVERROR(ENOMEM);
+            }
 
             if (decoderContext->codec_type == AVMEDIA_TYPE_VIDEO) {
                 encoderContext->height = decoderContext->height;
@@ -109,8 +120,10 @@ int main(int argc, char *argv[]) {
             } else {
                 encoderContext->sample_rate = decoderContext->sample_rate;
                 ret = av_channel_layout_copy(&encoderContext->ch_layout, &decoderContext->ch_layout);
-                if (ret < 0)
+                if (ret < 0) {
+                    fprintf(stderr, "Couldn't copy channel layout\n");
                     return ret;
+                }
                 /* take first format from list of supported formats */
                 encoderContext->sample_fmt = encoder->sample_fmts[0];
                 encoderContext->time_base = (AVRational){1, encoderContext->sample_rate};
@@ -120,68 +133,144 @@ int main(int argc, char *argv[]) {
                 encoderContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
             ret = avcodec_open2(encoderContext, encoder, NULL);
-            if (ret < 0) return ret;
+            if (ret < 0) {
+                fprintf(stderr, "Couldn't open encoder\n");
+                return ret;
+            }
 
-            ret = avcodec_parameters_from_context(outputStream->codecpar, encoderContext);
-            if (ret < 0) return ret;
+            // THIS IS NOT WORKING 
+            // ret = avcodec_parameters_from_context(outputStream->codecpar, encoderContext);
+            // if (ret < 0) return ret;
+
+            /* Copying Stream codec parameters 
+            Documentation says to set this manually but I hope it is fine since I'm remuxing to
+            the same format */
+            ret = avcodec_parameters_copy(outputStream->codecpar, inputStream->codecpar);
+            if (ret < 0) {
+                fprintf(stderr, "Copying parameters for stream #%d failed\n", i);
+                return ret;
+            }
  
             outputStream->time_base = encoderContext->time_base;
             streamContext[i].encoderContext = encoderContext;
-
-            ret = avcodec_parameters_copy(outputStream->codecpar, inputStream->codecpar);
-            if (ret < 0) {
-                printf("Copying parameters for stream #%u failed\n", i);
-                return ret;
-            }
-            outputStream->time_base = inputStream->time_base;
-
-        } else if (decoderContext->codec_type == AVMEDIA_TYPE_UNKNOWN) {
-            printf("Elementary stream #%d is of unknown type, cannot proceed\n", i);
-            return AVERROR_INVALIDDATA;
-        } else {
-            /* if this stream must be remuxed */ // ????
-            ret = avcodec_parameters_copy(outputStream->codecpar, inputStream->codecpar);
-            if (ret < 0) {
-                printf("Copying parameters for stream #%u failed\n", i);
-                return ret;
-            }
-            outputStream->time_base = inputStream->time_base;
-        }
+            
+        } 
     }
 
     // Dump information about file into standard error
-    av_dump_format(outputFormatContext, 0, argv[2], 1);
+    av_dump_format(outputFormatContext, 0, filename, 1);
 
     if (!(outputFormatContext->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&outputFormatContext->pb, argv[2], AVIO_FLAG_WRITE);
+        ret = avio_open(&outputFormatContext->pb, filename, AVIO_FLAG_WRITE);
         if (ret < 0) {
-            printf("Could not open output file '%s'", argv[2]);
+            fprintf(stderr, "Could not open output file '%s'", filename);
             return ret;
         }
     }
  
+    return 0;
+}
+
+
+
+int main(int argc, char *argv[]) {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <input file> <output file>\n", argv[0]);
+        return -1;
+    }
+    int ret;
+
+    AVFormatContext *inputFormatContext = NULL;
+
+    /* Open Video File */
+    ret = avformat_open_input(&inputFormatContext, argv[1], NULL, NULL);
+    if (ret < 0) {
+        fprintf(stderr, "Couldn't open input file: %s\n", argv[1]);
+        return ret;
+    }
+
+    /* Analyze File To Recieve Stream Information */
+    ret = avformat_find_stream_info(inputFormatContext, NULL);
+    if (ret < 0) {
+        fprintf(stderr, "Couldn't retrieve stream information of file\n");
+        return ret;
+    }
+
+    StreamCodecContext *streamContext = av_calloc(inputFormatContext->nb_streams, sizeof(StreamCodecContext));
+    if (!streamContext) {
+        fprintf(stderr, "Couldn't allocate StreamCodecContext object\n");
+        return AVERROR(ENOMEM);
+    }
+
+    if (setUpDecoders(streamContext, inputFormatContext, argv[1]) < 0)
+        goto cleanUp;
+
+    /* Allocate output format context */
+    AVFormatContext *outputFormatContext = NULL;
+    avformat_alloc_output_context2(&outputFormatContext, NULL, NULL, argv[2]);
+    if (!outputFormatContext) {
+        printf("Couldn't allocate output context\n");
+        return -1;
+    }
+
+    if (setUpEncoders(streamContext, inputFormatContext, outputFormatContext, argv[2]) < 0)
+        goto cleanUp;
+
+
     /* init muxer, write output file header */
     ret = avformat_write_header(outputFormatContext, NULL);
     if (ret < 0) {
-        printf("Error occurred when opening output file\n");
+        fprintf(stderr, "Error occurred when opening output file\n");
         return ret;
     }
 
 
     /* Read Packets */
     AVPacket *packet = av_packet_alloc();
-    if (!packet) return -1;
+    if (!packet) {
+        fprintf(stderr, "Couldn't allocate packet\n");
+        return -1;
+    }
 
     while (1) {
         ret = av_read_frame(inputFormatContext, packet);
         if (ret < 0) break;
 
         int streamIndex = packet->stream_index;
+        // Set varible of current StreamContext here
+        
         if (inputFormatContext->streams[streamIndex]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
+
+            ret = avcodec_send_packet(streamContext[streamIndex].decoderContext, packet);
+            if (ret < 0) return -1;
+
+            while (ret >= 0) {
+                ret = avcodec_receive_frame(streamContext[streamIndex].decoderContext, streamContext[streamIndex].decoderFrame);
+                if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN))
+                    break;
+                else if (ret < 0)
+                    return -1;
+                
+                streamContext[streamIndex].decoderFrame->pts = streamContext[streamIndex].decoderFrame->best_effort_timestamp;
+
+                av_packet_unref(packet);
+                ret = avcodec_send_frame(streamContext[streamIndex].encoderContext, streamContext[streamIndex].decoderFrame);
+                if (ret < 0) return -1;
+
+                while (ret >= 0) {
+                    ret = avcodec_receive_packet(streamContext[streamIndex].encoderContext, packet);
+                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+
+                    packet->stream_index = streamIndex;
+                    av_packet_rescale_ts(packet, streamContext[streamIndex].encoderContext->time_base, 
                                  outputFormatContext->streams[streamIndex]->time_base);
-            ret = av_interleaved_write_frame(outputFormatContext, packet);
-            if (ret < 0) break;
+                    ret = av_interleaved_write_frame(outputFormatContext, packet);
+                }
+
+                av_frame_unref(streamContext[streamIndex].decoderFrame);
+                if (ret < 0) return -1;
+            }
+            
         } else {
             av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
                                  outputFormatContext->streams[streamIndex]->time_base);
@@ -192,11 +281,14 @@ int main(int argc, char *argv[]) {
         av_packet_unref(packet);
     }
 
+    /* flush decoders and encoders */
+
 
     // av_write_frame();
     av_write_trailer(outputFormatContext);
 
     /* Clean up */
+cleanUp:
     av_packet_free(&packet);
 
     for (int i = 0; i < inputFormatContext->nb_streams; i++) {
