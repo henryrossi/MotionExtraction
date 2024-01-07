@@ -235,18 +235,18 @@ int remux(AVPacket *packet, AVFormatContext *inputFormatContext,
 
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input file> <output file>\n", argv[0]);
-        return -1;
-    }
+    // if (argc != 3) {
+    //     fprintf(stderr, "Usage: %s <input file> <output file>\n", argv[0]);
+    //     return -1;
+    // }
     int ret;
 
     AVFormatContext *inputFormatContext = NULL;
 
     /* Open Video File */
-    ret = avformat_open_input(&inputFormatContext, argv[1], NULL, NULL);
+    ret = avformat_open_input(&inputFormatContext, "pong.mov", NULL, NULL);
     if (ret < 0) {
-        fprintf(stderr, "Couldn't open input file: %s\n", argv[1]);
+        fprintf(stderr, "Couldn't open input file: %s\n", "pong.mov");
         return ret;
     }
 
@@ -263,18 +263,18 @@ int main(int argc, char *argv[]) {
         return AVERROR(ENOMEM);
     }
 
-    if (setUpDecoders(streamContext, inputFormatContext, argv[1]) < 0)
+    if (setUpDecoders(streamContext, inputFormatContext, "pong.mov") < 0)
         goto cleanUp;
 
     /* Allocate output format context */
     AVFormatContext *outputFormatContext = NULL;
-    avformat_alloc_output_context2(&outputFormatContext, NULL, NULL, argv[2]);
+    avformat_alloc_output_context2(&outputFormatContext, NULL, NULL, "test.mov");
     if (!outputFormatContext) {
         printf("Couldn't allocate output context\n");
         return -1;
     }
 
-    if (setUpEncoders(streamContext, inputFormatContext, outputFormatContext, argv[2]) < 0)
+    if (setUpEncoders(streamContext, inputFormatContext, outputFormatContext, "test.mov") < 0)
         goto cleanUp;
 
 
