@@ -7,17 +7,22 @@
 // Only need codec information for video stream since that is the only stream
 // I will be decoding/encoding
 
-// First remux video file
+typedef struct VideoStreamCodec {
+    AVCodecContext *decoderContext;
+    AVCodecContext *encoderContext;
+    // AVFrame *prevDecoderFrame;
+    AVFrame *frame;
+} VideoStreamCodec;
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-    fprintf(stderr, "Usage: %s <input file> <output file>\n", argv[0]);
-        return -1;
-    }
+    // if (argc != 3) {
+    // fprintf(stderr, "Usage: %s <input file> <output file>\n", argv[0]);
+    //     return -1;
+    // }
 
     AVFormatContext *inputFormatContext = NULL;
 
-    int ret = avformat_open_input(&inputFormatContext, argv[1], NULL, NULL);
+    int ret = avformat_open_input(&inputFormatContext, "pong.mov", NULL, NULL);
     if (ret < 0) {
         fprintf(stderr, "ERROR:   Failed to open input file\n");
         return ret;
@@ -29,7 +34,7 @@ int main(int argc, char *argv[]) {
         return ret;
     }
 
-    av_dump_format(inputFormatContext, 0, argv[1], 0);
+    av_dump_format(inputFormatContext, 0, "pong.mov", 0);
 
     /* Must set the following before muxing: 
        AVFormatContext.oformat (selects the muxer that will be used) (set using avformat_alloc_output_context2()?)
@@ -49,16 +54,16 @@ int main(int argc, char *argv[]) {
                   I assume it is fine then to use avcodec_parameters_copy().
     */
     AVFormatContext *outputFormatContext = NULL;
-    ret = avformat_alloc_output_context2(&outputFormatContext, NULL, NULL, argv[2]);
+    ret = avformat_alloc_output_context2(&outputFormatContext, NULL, NULL, "newtest.mov");
     if (ret < 0){
         fprintf(stderr, "ERROR:   Failed to allocate output context\n");
         return ret;
     }
 
     if (!(outputFormatContext->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&outputFormatContext->pb, argv[2], AVIO_FLAG_WRITE);
+        ret = avio_open(&outputFormatContext->pb, "newtest.mov", AVIO_FLAG_WRITE);
         if (ret < 0) {
-            fprintf(stderr, "ERROR:   Could not open output file '%s'", argv[2]);
+            fprintf(stderr, "ERROR:   Could not open output file '%s'", "newtest.mov");
             return ret;
         }
     }
@@ -77,7 +82,96 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    av_dump_format(outputFormatContext, 0, argv[2], 1);
+    av_dump_format(outputFormatContext, 0, "newtest.mov", 1);
+
+    // Hardcoded to handle files with only 1 video stream for now
+    VideoStreamCodec *videoStreamCodec = av_calloc(1, sizeof(VideoStreamCodec));
+    if (videoStreamCodec == NULL) {
+        fprintf(stderr, "ERROR:   Couldn't allocate StreamCodecContext object\n");
+        return AVERROR(ENOMEM);
+    }
+    videoStreamCodec->frame = av_frame_alloc();
+    if (videoStreamCodec->frame == NULL) {
+        fprintf(stderr, "ERROR:   Couldn't allocate frame\n");
+        return AVERROR(ENOMEM);
+    }
+
+    /* Steps for setting up a codecContext:
+            Allocate codecContext with avcodec_alloc_context3() (free with avcodec_free_context())
+            Retrieve a codec using avcodec_find_decoder/encoder_by_name() or avcodec_find_decoder/encoder()
+            Parameters to Context?
+            Open codecContext with avcodec_open2()
+    */
+    for (int i = 0; i < inputFormatContext->nb_streams; i++)
+        if (inputFormatContext->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            const AVCodec *decoder = avcodec_find_decoder(inputFormatContext->streams[i]->codecpar->codec_id);
+            if (decoder == NULL) {
+                fprintf(stderr, "ERROR:   Couldn't find the encoder/decoder\n");
+                return -1;
+            }
+
+            AVCodecContext *decoderContext = avcodec_alloc_context3(decoder);
+            if (decoderContext == NULL) {
+                fprintf(stderr, "ERROR:   Couldn't allocate the decoder context with the given decoder\n");
+                return -1;
+            }
+
+            ret = avcodec_parameters_to_context(decoderContext, inputFormatContext->streams[i]->codecpar);
+            if (ret < 0) {
+                fprintf(stderr, "ERROR:   Failed to fill the decoder context based on the values from codec parameters\n");
+                return ret;
+            }
+
+            ret = avcodec_open2(decoderContext, decoder, NULL);
+            if (ret < 0) {
+                fprintf(stderr, "ERROR:   Failed to open the decoder context\n");
+                return ret;
+            }
+
+            videoStreamCodec->decoderContext = decoderContext;
+
+
+            const AVCodec *encoder = avcodec_find_encoder(inputFormatContext->streams[i]->codecpar->codec_id);
+            if (encoder == NULL) {
+                fprintf(stderr, "ERROR:   Couldn't find the encoder/decoder\n");
+                return -1;
+            }
+
+            AVCodecContext *encoderContext = avcodec_alloc_context3(encoder);
+            if (encoderContext == NULL) {
+                fprintf(stderr, "ERROR:   Couldn't allocate the encoder context with the given codec\n");
+                return -1;
+            }
+
+            ret = avcodec_parameters_to_context(encoderContext, inputFormatContext->streams[i]->codecpar);
+            if (ret < 0) {
+                fprintf(stderr, "ERROR:   Failed to fill the encoder context based on the values from codec parameters\n");
+                return ret;
+            }
+
+            // encoder timebase is not set error
+            /* this is a "theoretical" time base, before writing a frame you must convert
+               its timebase to the one actually used by the stream using av_packet_rescale_ts() */
+            encoderContext->time_base = av_inv_q(av_guess_frame_rate(inputFormatContext, inputFormatContext->streams[i], NULL));
+
+            if (outputFormatContext->oformat->flags & AVFMT_GLOBALHEADER)
+                encoderContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+            ret = avcodec_open2(encoderContext, encoder, NULL);
+            if (ret < 0) {
+                fprintf(stderr, "ERROR:   Failed to open the encoder context\n");
+                return ret;
+            }
+
+            ret = avcodec_parameters_from_context(outputFormatContext->streams[i]->codecpar, encoderContext);
+            if (ret < 0) {
+                fprintf(stderr, "ERROR:   Failed avcodec_parameters_from_context()\n");
+                return ret;
+            }
+
+            videoStreamCodec->encoderContext = encoderContext;
+        }
+
 
     ret = avformat_write_header(outputFormatContext, NULL);
     if (ret < 0) {
@@ -94,13 +188,78 @@ int main(int argc, char *argv[]) {
     while (av_read_frame(inputFormatContext, packet) >= 0) {
         int streamIndex = packet->stream_index;
 
-        av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
+        if (inputFormatContext->streams[streamIndex]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            /* Steps for decoding and reencoding:
+                    Call avcodec_send_packet() to give the decoder raw compressed data in an AVPacket.
+                    In a loop:
+                        Call avcodec_receive_frame(). On success, it will return an AVFrame containing 
+                        uncompressed audio or video data.
+                        Repeat this call until it returns:
+                            AVERROR(EAGAIN) -> continue with sending input with avcodec_send_packet()
+                            Error -> stop program
+                        Now we have an AVFrame
+                        Call avcodec_send_frame() to give the encoder the AVFrame.
+                        In a loop:
+                            Call avcodec_receive_packet(). On success, it will return an AVPacket with a
+                            compressed frame.
+                            Repeat this call until it returns:
+                                AVERROR(EAGAIN) -> continue with sending input with avcodec_send_frame()
+                                Error -> stop program
+                            Now we have an AVPacket
+                            Remux that packet
+            */
+            ret = avcodec_send_packet(videoStreamCodec->decoderContext, packet);
+            if (ret < 0) {
+                fprintf(stderr, "ERROR:   Failed sending packet to decoder\n");
+                return ret;
+            }
+            while (1) {
+                ret = avcodec_receive_frame(videoStreamCodec->decoderContext, videoStreamCodec->frame);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+                if (ret < 0) {
+                    fprintf(stderr, "ERROR:   Failed recieving frame from decoder\n");
+                    return ret;
+                }
+
+                videoStreamCodec->frame->pts = videoStreamCodec->frame->best_effort_timestamp;
+
+                ret = avcodec_send_frame(videoStreamCodec->encoderContext, videoStreamCodec->frame);
+                if (ret < 0) {
+                    fprintf(stderr, "ERROR:   Failed sending frame to encoder, (error: %s)\n", av_err2str(ret));
+                    return ret;
+                }
+
+                while (1) {
+                    av_packet_unref(packet);
+
+                    ret = avcodec_receive_packet(videoStreamCodec->encoderContext, packet);
+                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+                    if (ret < 0) {
+                        fprintf(stderr, "ERROR:   Failed recieving packet from encoder\n");
+                        return ret;
+                    }
+
+                    av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
                              outputFormatContext->streams[streamIndex]->time_base);
 
-        ret = av_interleaved_write_frame(outputFormatContext, packet);
-        if (ret < 0) {
-            fprintf(stderr, "ERROR:   Failed to write packet to output file\n");
-            return ret;
+                    ret = av_interleaved_write_frame(outputFormatContext, packet);
+                    if (ret < 0) {
+                        fprintf(stderr, "ERROR:   Failed to write packet to output file\n");
+                        return ret;
+                    }
+                }
+
+                av_frame_unref(videoStreamCodec->frame);
+            }
+        } else {
+            av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
+                             outputFormatContext->streams[streamIndex]->time_base);
+
+            ret = av_interleaved_write_frame(outputFormatContext, packet);
+            if (ret < 0) {
+                fprintf(stderr, "ERROR:   Failed to write packet to output file\n");
+                return ret;
+            }
         }
 
         av_packet_unref(packet);
@@ -113,6 +272,9 @@ int main(int argc, char *argv[]) {
     }
 
     av_packet_free(&packet);
+    av_free(videoStreamCodec);
+    if (outputFormatContext && !(outputFormatContext->oformat->flags & AVFMT_NOFILE))
+        avio_closep(&outputFormatContext->pb);
     avformat_free_context(outputFormatContext);
     avformat_close_input(&inputFormatContext);
 
