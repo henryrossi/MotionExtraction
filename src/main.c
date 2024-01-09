@@ -9,6 +9,20 @@ typedef struct VideoStreamCodec {
     AVFrame *frame;
 } VideoStreamCodec;
 
+int mux(AVFormatContext *iformat_context, AVFormatContext *oformat_context, 
+        AVPacket *packet, int stream_index) {
+    av_packet_rescale_ts(packet, iformat_context->streams[stream_index]->time_base, 
+                             oformat_context->streams[stream_index]->time_base);
+
+    int ret = av_interleaved_write_frame(oformat_context, packet);
+    if (ret < 0) {
+        fprintf(stderr, "ERROR:   Failed to write packet to output file\n");
+        return ret;
+    }
+    return 0;
+}
+
+
 int main(int argc, char *argv[]) {
     // if (argc != 3) {
     // fprintf(stderr, "Usage: %s <input file> <output file>\n", argv[0]);
@@ -144,7 +158,6 @@ int main(int argc, char *argv[]) {
 
     av_dump_format(outputFormatContext, 0, "newtest.mov", 1);
 
-
     ret = avformat_write_header(outputFormatContext, NULL);
     if (ret < 0) {
         fprintf(stderr, "ERROR:   Failed to write header to the output file\n");
@@ -192,33 +205,20 @@ int main(int argc, char *argv[]) {
                         return ret;
                     }
 
-                    av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
-                             outputFormatContext->streams[streamIndex]->time_base);
-
-                    ret = av_interleaved_write_frame(outputFormatContext, packet);
-                    if (ret < 0) {
-                        fprintf(stderr, "ERROR:   Failed to write packet to output file\n");
-                        return ret;
-                    }
+                    ret = mux(inputFormatContext, outputFormatContext, packet, streamIndex);
+                    if (ret < 0) return ret;
                 }
 
                 av_frame_unref(videoStreamCodec->frame);
             }
         } else {
-            av_packet_rescale_ts(packet, inputFormatContext->streams[streamIndex]->time_base, 
-                             outputFormatContext->streams[streamIndex]->time_base);
-
-            ret = av_interleaved_write_frame(outputFormatContext, packet);
-            if (ret < 0) {
-                fprintf(stderr, "ERROR:   Failed to write packet to output file\n");
-                return ret;
-            }
+            ret = mux(inputFormatContext, outputFormatContext, packet, streamIndex);
+            if (ret < 0) return ret;
         }
 
         av_packet_unref(packet);
     }
 
-    // flush encoder and decoder
     ret = avcodec_send_packet(videoStreamCodec->decoderContext, NULL);
     if (ret < 0) {
         fprintf(stderr, "ERROR:   Failed to flush decoder\n");
@@ -288,7 +288,6 @@ int main(int argc, char *argv[]) {
             return ret;
         }
     }
-
 
     ret = av_write_trailer(outputFormatContext);
     if (ret < 0) {
