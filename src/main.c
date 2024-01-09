@@ -3,6 +3,7 @@
 #include <libavformat/avformat.h>
 
 typedef struct VideoStreamCodec {
+    // stream index?
     AVCodecContext *decoderContext;
     AVCodecContext *encoderContext;
     // AVFrame *prevDecoderFrame;
@@ -22,6 +23,53 @@ int mux(AVFormatContext *iformat_context, AVFormatContext *oformat_context,
     return 0;
 }
 
+int encode_video(AVFormatContext *iformat_context, AVFormatContext *oformat_context, 
+                 VideoStreamCodec *video_codec , AVPacket *packet, int stream_index) {
+    int ret;
+    while (1) {
+        av_packet_unref(packet);
+
+        ret = avcodec_receive_packet(video_codec->encoderContext, packet);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+        if (ret < 0) {
+            fprintf(stderr, "ERROR:   Failed recieving packet from encoder\n");
+            return ret;
+        }
+
+        ret = mux(iformat_context, oformat_context, packet, stream_index);
+        if (ret < 0) return ret;
+    }
+
+    av_frame_unref(video_codec->frame);
+
+    return 0;
+}
+
+int process_video(AVFormatContext *iformat_context, AVFormatContext *oformat_context, 
+                  VideoStreamCodec *video_codec , AVPacket *packet, int stream_index) {
+    int ret;
+    while (1) {
+        ret = avcodec_receive_frame(video_codec->decoderContext, video_codec->frame);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+        if (ret < 0) {
+            fprintf(stderr, "ERROR:   Failed recieving frame from decoder\n");
+            return ret;
+        }
+
+        video_codec->frame->pts = video_codec->frame->best_effort_timestamp;
+
+        ret = avcodec_send_frame(video_codec->encoderContext, video_codec->frame);
+        if (ret < 0) {
+            fprintf(stderr, "ERROR:   Failed sending frame to encoder, (error: %s)\n", av_err2str(ret));
+            return ret;
+        }
+
+        ret = encode_video(iformat_context, oformat_context, video_codec, packet, stream_index);
+        if (ret < 0) return ret;
+    }
+
+    return 0;
+}
 
 int main(int argc, char *argv[]) {
     // if (argc != 3) {
@@ -179,39 +227,11 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "ERROR:   Failed sending packet to decoder\n");
                 return ret;
             }
-            while (1) {
-                ret = avcodec_receive_frame(videoStreamCodec->decoderContext, videoStreamCodec->frame);
-                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-                if (ret < 0) {
-                    fprintf(stderr, "ERROR:   Failed recieving frame from decoder\n");
-                    return ret;
-                }
 
-                videoStreamCodec->frame->pts = videoStreamCodec->frame->best_effort_timestamp;
-
-                ret = avcodec_send_frame(videoStreamCodec->encoderContext, videoStreamCodec->frame);
-                if (ret < 0) {
-                    fprintf(stderr, "ERROR:   Failed sending frame to encoder, (error: %s)\n", av_err2str(ret));
-                    return ret;
-                }
-
-                while (1) {
-                    av_packet_unref(packet);
-
-                    ret = avcodec_receive_packet(videoStreamCodec->encoderContext, packet);
-                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-                    if (ret < 0) {
-                        fprintf(stderr, "ERROR:   Failed recieving packet from encoder\n");
-                        return ret;
-                    }
-
-                    ret = mux(inputFormatContext, outputFormatContext, packet, streamIndex);
-                    if (ret < 0) return ret;
-                }
-
-                av_frame_unref(videoStreamCodec->frame);
-            }
-        } else {
+            ret = process_video(inputFormatContext, outputFormatContext, videoStreamCodec, packet, streamIndex);
+            if (ret < 0) return ret;
+        } 
+        else {
             ret = mux(inputFormatContext, outputFormatContext, packet, streamIndex);
             if (ret < 0) return ret;
         }
@@ -224,70 +244,16 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "ERROR:   Failed to flush decoder\n");
         return ret;
     }
-    while (1) {
-        ret = avcodec_receive_frame(videoStreamCodec->decoderContext, videoStreamCodec->frame);
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-        if (ret < 0) {
-            fprintf(stderr, "ERROR:   Failed recieving frame from decoder\n");
-            return ret;
-        }
-
-        videoStreamCodec->frame->pts = videoStreamCodec->frame->best_effort_timestamp;
-
-        ret = avcodec_send_frame(videoStreamCodec->encoderContext, videoStreamCodec->frame);
-        if (ret < 0) {
-            fprintf(stderr, "ERROR:   Failed sending frame to encoder, (error: %s)\n", av_err2str(ret));
-            return ret;
-        }
-
-        while (1) {
-            av_packet_unref(packet);
-
-            ret = avcodec_receive_packet(videoStreamCodec->encoderContext, packet);
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-            if (ret < 0) {
-                fprintf(stderr, "ERROR:   Failed recieving packet from encoder\n");
-                return ret;
-            }
-
-            av_packet_rescale_ts(packet, inputFormatContext->streams[video_stream]->time_base, 
-                        outputFormatContext->streams[video_stream]->time_base);
-
-            ret = av_interleaved_write_frame(outputFormatContext, packet);
-            if (ret < 0) {
-                fprintf(stderr, "ERROR:   Failed to write packet to output file\n");
-                return ret;
-            }
-        }
-
-        av_frame_unref(videoStreamCodec->frame);
-    }
-
+    ret = process_video(inputFormatContext, outputFormatContext, videoStreamCodec, packet, video_stream);
+    if (ret < 0) return ret;
+    
     ret = avcodec_send_frame(videoStreamCodec->encoderContext, NULL);
     if (ret < 0) {
         fprintf(stderr, "ERROR:   Failed sending frame to encoder, (error: %s)\n", av_err2str(ret));
         return ret;
     }
-
-    while (1) {
-        av_packet_unref(packet);
-
-        ret = avcodec_receive_packet(videoStreamCodec->encoderContext, packet);
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-        if (ret < 0) {
-            fprintf(stderr, "ERROR:   Failed recieving packet from encoder\n");
-            return ret;
-        }
-
-        av_packet_rescale_ts(packet, inputFormatContext->streams[video_stream]->time_base, 
-                    outputFormatContext->streams[video_stream]->time_base);
-
-        ret = av_interleaved_write_frame(outputFormatContext, packet);
-        if (ret < 0) {
-            fprintf(stderr, "ERROR:   Failed to write packet to output file\n");
-            return ret;
-        }
-    }
+    ret = encode_video(inputFormatContext, outputFormatContext, videoStreamCodec, packet, video_stream);
+    if (ret < 0) return ret;
 
     ret = av_write_trailer(outputFormatContext);
     if (ret < 0) {
