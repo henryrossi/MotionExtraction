@@ -1,25 +1,13 @@
 #include <stdio.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <libswscale/swscale.h>
 
-typedef struct VideoStreamCodec {
-    AVCodecContext *decoderContext;
-    AVCodecContext *encoderContext;
+typedef struct VideoCodec {
+    AVCodecContext *decoder_context;
+    AVCodecContext *encoder_context;
     AVFrame *frame;
     uint8_t *inverted_data[8];
-} VideoStreamCodec;
-
-// move into above struct
-int frames_passed = 0;
-
-/*
-Get first frame
-invert it's color
-add inverted first frame to every frame
-*/
-
-
+} VideoCodec;
 
 int mux(AVFormatContext *iformat_context, AVFormatContext *oformat_context, 
         AVPacket *packet, int stream_index) {
@@ -35,12 +23,12 @@ int mux(AVFormatContext *iformat_context, AVFormatContext *oformat_context,
 }
 
 int encode_video(AVFormatContext *iformat_context, AVFormatContext *oformat_context, 
-                 VideoStreamCodec *video_codec , AVPacket *packet, int stream_index) {
+                 VideoCodec *video_codec , AVPacket *packet, int stream_index) {
     int ret;
     while (1) {
         av_packet_unref(packet);
 
-        ret = avcodec_receive_packet(video_codec->encoderContext, packet);
+        ret = avcodec_receive_packet(video_codec->encoder_context, packet);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
         if (ret < 0) {
             fprintf(stderr, "ERROR:   Failed recieving packet from encoder\n");
@@ -56,11 +44,68 @@ int encode_video(AVFormatContext *iformat_context, AVFormatContext *oformat_cont
     return 0;
 }
 
+void overlay_frames_yuv420p(VideoCodec *video_codec) {
+    /* Y */
+    for (int y = 0; y < video_codec->frame->height; y++) {
+        for (int x = 0; x < video_codec->frame->width; x++) {
+            video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x] =
+                (video_codec->inverted_data[0][y * video_codec->frame->linesize[0] + x] +
+                video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x]) / 2;
+        }
+    }
+
+    /* Cb and Cr */
+    for (int y = 0; y < video_codec->frame->height/2; y++) {
+        for (int x = 0; x < video_codec->frame->width/2; x++) {
+            video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x] =
+                (video_codec->inverted_data[1][y * video_codec->frame->linesize[1] + x] +
+                video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x]) / 2;
+            video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x] =
+                (video_codec->inverted_data[2][y * video_codec->frame->linesize[2] + x] +
+                video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x]) / 2;
+        }
+    }
+}
+
+int write_inverted_frame_yuv420p(VideoCodec *video_codec) {
+    video_codec->inverted_data[0] = (uint8_t *) malloc(sizeof(uint8_t) * 
+                    video_codec->frame->width * video_codec->frame->height);
+    video_codec->inverted_data[1] = (uint8_t *) malloc(sizeof(uint8_t) * 
+                    video_codec->frame->width / 2 * video_codec->frame->height);
+    video_codec->inverted_data[2] = (uint8_t *) malloc(sizeof(uint8_t) * 
+                    video_codec->frame->width / 2 * video_codec->frame->height);
+    
+    if (video_codec->inverted_data[0] == NULL || video_codec->inverted_data[1] == NULL || 
+        video_codec->inverted_data[2] == NULL) {
+        fprintf(stderr, "ERROR:   Failed to allocate memory for inverted frames\n");
+        return -1;
+    }
+
+    /* Y */
+    for (int y = 0; y < video_codec->frame->height; y++) {
+        for (int x = 0; x < video_codec->frame->width; x++) {
+            video_codec->inverted_data[0][y * video_codec->frame->linesize[0] + x] =
+                255 - video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x];
+        }
+    }
+
+    /* Cb and Cr */
+    for (int y = 0; y < video_codec->frame->height/2; y++) {
+        for (int x = 0; x < video_codec->frame->width/2; x++) {
+            video_codec->inverted_data[1][y * video_codec->frame->linesize[1] + x] =
+                255 - video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x];
+            video_codec->inverted_data[2][y * video_codec->frame->linesize[2] + x] =
+                255 - video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x];
+        }
+    }
+    return 0;
+}
+
 int process_video(AVFormatContext *iformat_context, AVFormatContext *oformat_context, 
-                  VideoStreamCodec *video_codec , AVPacket *packet, int stream_index) {
+                  VideoCodec *video_codec , AVPacket *packet, int stream_index) {
     int ret;
     while (1) {
-        ret = avcodec_receive_frame(video_codec->decoderContext, video_codec->frame);
+        ret = avcodec_receive_frame(video_codec->decoder_context, video_codec->frame);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
         if (ret < 0) {
             fprintf(stderr, "ERROR:   Failed recieving frame from decoder\n");
@@ -69,55 +114,14 @@ int process_video(AVFormatContext *iformat_context, AVFormatContext *oformat_con
 
         video_codec->frame->pts = video_codec->frame->best_effort_timestamp;
 
-        frames_passed++;
-
-        if (frames_passed == 1) {
-            video_codec->inverted_data[0] = (uint8_t *) malloc(sizeof(uint8_t) * video_codec->frame->width * video_codec->frame->height);
-            video_codec->inverted_data[1] = (uint8_t *) malloc(sizeof(uint8_t) * video_codec->frame->width / 2 * video_codec->frame->height);
-            video_codec->inverted_data[2] = (uint8_t *) malloc(sizeof(uint8_t) * video_codec->frame->width / 2 * video_codec->frame->height);
-
-            /* Y */
-            for (int y = 0; y < video_codec->frame->height; y++) {
-                for (int x = 0; x < video_codec->frame->width; x++) {
-                    video_codec->inverted_data[0][y * video_codec->frame->linesize[0] + x] =
-                        255 - video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x];
-                }
-            }
-    
-            /* Cb and Cr */
-            for (int y = 0; y < video_codec->frame->height/2; y++) {
-                for (int x = 0; x < video_codec->frame->width/2; x++) {
-                    video_codec->inverted_data[1][y * video_codec->frame->linesize[1] + x] =
-                        255 - video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x];
-                    video_codec->inverted_data[2][y * video_codec->frame->linesize[2] + x] =
-                        255 - video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x];
-                }
-            }
+        if (video_codec->inverted_data[0] == NULL) {
+            ret = write_inverted_frame_yuv420p(video_codec);
+            if (ret < 0) return ret;
         }
 
-        /* Y */
-        for (int y = 0; y < video_codec->frame->height; y++) {
-            for (int x = 0; x < video_codec->frame->width; x++) {
-                video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x] =
-                    (video_codec->inverted_data[0][y * video_codec->frame->linesize[0] + x] +
-                    video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x]) / 2;
-            }
-        }
+        overlay_frames_yuv420p(video_codec);
 
-        /* Cb and Cr */
-        for (int y = 0; y < video_codec->frame->height/2; y++) {
-            for (int x = 0; x < video_codec->frame->width/2; x++) {
-                video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x] =
-                    (video_codec->inverted_data[1][y * video_codec->frame->linesize[1] + x] +
-                    video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x]) / 2;
-                video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x] =
-                    (video_codec->inverted_data[2][y * video_codec->frame->linesize[2] + x] +
-                    video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x]) / 2;
-            }
-        }
-
-
-        ret = avcodec_send_frame(video_codec->encoderContext, video_codec->frame);
+        ret = avcodec_send_frame(video_codec->encoder_context, video_codec->frame);
         if (ret < 0) {
             fprintf(stderr, "ERROR:   Failed sending frame to encoder, (error: %s)\n", av_err2str(ret));
             return ret;
@@ -131,14 +135,14 @@ int process_video(AVFormatContext *iformat_context, AVFormatContext *oformat_con
 }
 
 int main(int argc, char *argv[]) {
-    // if (argc != 3) {
-    // fprintf(stderr, "Usage: %s <input file> <output file>\n", argv[0]);
-    //     return -1;
-    // }
+    if (argc != 3) {
+    fprintf(stderr, "Usage: %s <input file> <output file>\n", argv[0]);
+        return -1;
+    }
 
     AVFormatContext *iformat_context = NULL;
 
-    int ret = avformat_open_input(&iformat_context, "pexels.mp4", NULL, NULL);
+    int ret = avformat_open_input(&iformat_context, argv[1], NULL, NULL);
     if (ret < 0) {
         fprintf(stderr, "ERROR:   Failed to open input file\n");
         return ret;
@@ -150,48 +154,30 @@ int main(int argc, char *argv[]) {
         return ret;
     }
 
-    av_dump_format(iformat_context, 0, "pexels.mp4", 0);
+    av_dump_format(iformat_context, 0, argv[1], 0);
 
     AVFormatContext *oformat_context = NULL;
-    ret = avformat_alloc_output_context2(&oformat_context, NULL, NULL, "newtest.mp4");
+    ret = avformat_alloc_output_context2(&oformat_context, NULL, NULL, argv[2]);
     if (ret < 0){
         fprintf(stderr, "ERROR:   Failed to allocate output context\n");
         return ret;
     }
 
     if (!(oformat_context->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&oformat_context->pb, "newtest.mp4", AVIO_FLAG_WRITE);
+        ret = avio_open(&oformat_context->pb, argv[2], AVIO_FLAG_WRITE);
         if (ret < 0) {
-            fprintf(stderr, "ERROR:   Could not open output file '%s'", "newtest.mp4");
+            fprintf(stderr, "ERROR:   Could not open output file '%s'", argv[2]);
             return ret;
         }
     }
 
     // Hardcoded to handle files with only 1 video stream for now
-    VideoStreamCodec *videoStreamCodec = av_calloc(1, sizeof(VideoStreamCodec));
-    if (videoStreamCodec == NULL) {
-        fprintf(stderr, "ERROR:   Couldn't allocate StreamCodecContext object\n");
-        return AVERROR(ENOMEM);
-    }
-    videoStreamCodec->frame = av_frame_alloc();
-    if (videoStreamCodec->frame == NULL) {
+    VideoCodec video_codec = { 0 };
+    video_codec.frame = av_frame_alloc();
+    if (video_codec.frame == NULL) {
         fprintf(stderr, "ERROR:   Couldn't allocate frame\n");
         return AVERROR(ENOMEM);
     }
-    // videoStreamCodec->new_frame = av_frame_alloc();
-    // if (videoStreamCodec->new_frame == NULL) {
-    //     fprintf(stderr, "ERROR:   Couldn't allocate frame\n");
-    //     return AVERROR(ENOMEM);
-    // }
-    // videoStreamCodec->delay = 2;
-    // videoStreamCodec->prev_frames = av_calloc(videoStreamCodec->delay + 1, sizeof(AVFrame *));
-    // for (int i = 0; i < videoStreamCodec->delay + 1; i++) {
-    //     videoStreamCodec->prev_frames[i] = av_frame_alloc();
-    //     if (videoStreamCodec->prev_frames[i] == NULL) {
-    //         fprintf(stderr, "ERROR:   Couldn't allocate frame\n");
-    //         return AVERROR(ENOMEM);
-    //     }
-    // }
 
     int video_stream = -1;
 
@@ -214,7 +200,7 @@ int main(int argc, char *argv[]) {
     }
     
     if (video_stream < 0) {
-        // only one video stream
+        fprintf(stderr, "ERROR:   Program only supports video files with one video stream\n");
         return -1;
     }
 
@@ -247,8 +233,7 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    videoStreamCodec->decoderContext = decoder_context;
-
+    video_codec.decoder_context = decoder_context;
 
     const AVCodec *encoder = avcodec_find_encoder(iformat_context->streams[video_stream]->codecpar->codec_id);
     if (encoder == NULL) {
@@ -285,7 +270,7 @@ int main(int argc, char *argv[]) {
         return ret;
     }
 
-    videoStreamCodec->encoderContext = encoder_context;
+    video_codec.encoder_context = encoder_context;
 
     av_dump_format(oformat_context, 0, "newtest.mov", 1);
 
@@ -305,13 +290,13 @@ int main(int argc, char *argv[]) {
         int streamIndex = packet->stream_index;
 
         if (iformat_context->streams[streamIndex]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            ret = avcodec_send_packet(videoStreamCodec->decoderContext, packet);
+            ret = avcodec_send_packet(video_codec.decoder_context, packet);
             if (ret < 0) {
                 fprintf(stderr, "ERROR:   Failed sending packet to decoder\n");
                 return ret;
             }
 
-            ret = process_video(iformat_context, oformat_context, videoStreamCodec, packet, streamIndex);
+            ret = process_video(iformat_context, oformat_context, &video_codec, packet, streamIndex);
             if (ret < 0) return ret;
         } 
         else {
@@ -322,21 +307,21 @@ int main(int argc, char *argv[]) {
         av_packet_unref(packet);
     }
 
-    ret = avcodec_send_packet(videoStreamCodec->decoderContext, NULL);
+    ret = avcodec_send_packet(video_codec.decoder_context, NULL);
     if (ret < 0) {
         fprintf(stderr, "ERROR:   Failed to flush decoder\n");
         return ret;
     }
-    ret = process_video(iformat_context, oformat_context, videoStreamCodec, packet, video_stream);
+    ret = process_video(iformat_context, oformat_context, &video_codec, packet, video_stream);
     if (ret < 0) return ret;
     
 
-    ret = avcodec_send_frame(videoStreamCodec->encoderContext, NULL);
+    ret = avcodec_send_frame(video_codec.encoder_context, NULL);
     if (ret < 0) {
         fprintf(stderr, "ERROR:   Failed to flush encoder\n");
         return ret;
     }
-    ret = encode_video(iformat_context, oformat_context, videoStreamCodec, packet, video_stream);
+    ret = encode_video(iformat_context, oformat_context, &video_codec, packet, video_stream);
     if (ret < 0) return ret;
 
 
@@ -347,7 +332,11 @@ int main(int argc, char *argv[]) {
     }
 
     av_packet_free(&packet);
-    av_free(videoStreamCodec);
+    avcodec_free_context(&video_codec.decoder_context);
+    avcodec_free_context(&video_codec.encoder_context);
+    av_frame_free(&video_codec.frame);
+    for (int i = 0; i < 8; i++)
+        free(video_codec.inverted_data[i]);
     if (oformat_context && !(oformat_context->oformat->flags & AVFMT_NOFILE))
         avio_closep(&oformat_context->pb);
     avformat_free_context(oformat_context);
