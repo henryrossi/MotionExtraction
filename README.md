@@ -14,7 +14,7 @@ Below is a still frame from the original video.
 
 <img width="1274" alt="Screenshot 2024-01-26 at 10 37 37 AM" src="https://github.com/henryrossi/MotionExtraction/assets/102625896/b4ad2d27-b9ac-40f2-92e6-5ad2c7e750dc">
 
-Now the same frame from the new video shows everything that has changed since the first frame. Here the only thing that has changed is the position of the swing. You can see its current position outlined in black and the swing's original position outlined in white.
+Now the same frame from the new video shows everything that has changed since the first frame. Here the only thing that has changed is the position of the swing as it rocks back and forth. You can see its current position outlined in black and the swing's original position outlined in white.
 
 <img width="1274" alt="Screenshot 2024-01-26 at 10 37 00 AM" src="https://github.com/henryrossi/MotionExtraction/assets/102625896/45194327-f7d5-44fd-90a2-fe8e2db9ce4d">
 
