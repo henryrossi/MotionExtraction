@@ -171,7 +171,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Hardcoded to handle files with only 1 video stream for now
     VideoCodec video_codec = { 0 };
     video_codec.frame = av_frame_alloc();
     if (video_codec.frame == NULL) {
