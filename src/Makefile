@@ -9,11 +9,5 @@ main: main.o
 main.o: main.c
 	$(CC) $(CFLAGS) -c main.c
 
-# main.o: main.c  test.h
-# 	$(CC) $(CFLAGS) -c main.c
-
-# test.o: test.c test.h
-# 	$(CC) $(CFLAGS) -c test.c
-
 clean:
 	$(RM) MotionExtraction *.o *~
