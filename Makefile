@@ -12,7 +12,7 @@
 # who bundle all third-party dependencies.
 
 CC = gcc
-CFLAGS  = -g -Wall
+CFLAGS  = -g -Wall -Wextra
 # LFLAGS = -L/usr/local/Cellar/ffmpeg/6.0_2/lib
 LIBS =  -lavformat -lavcodec -lavutil
 
