@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 
@@ -39,7 +41,9 @@ int encode_video(AVFormatContext *iformat_context, AVFormatContext *oformat_cont
         if (ret < 0) return ret;
     }
 
-    av_frame_unref(video_codec->frame);
+    // av_frame_unref(video_codec->frame);
+    av_frame_free(&video_codec->frame);
+    video_codec->frame = NULL;
 
     return 0;
 }
@@ -47,33 +51,51 @@ int encode_video(AVFormatContext *iformat_context, AVFormatContext *oformat_cont
 void overlay_frames_yuv420p(VideoCodec *video_codec) {
     /* Y */
     for (int y = 0; y < video_codec->frame->height; y++) {
-        for (int x = 0; x < video_codec->frame->width; x++) {
-            video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x] =
-                (video_codec->inverted_data[0][y * video_codec->frame->linesize[0] + x] +
+        for (int x = 0; x < video_codec->frame->linesize[0]; x++) {
+            int byte = (video_codec->inverted_data[0][y * video_codec->frame->linesize[0] + x] +
                 video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x]) / 2;
+            if (byte > 255) {
+                byte = 255;
+            }
+            video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x] = byte;
         }
     }
 
     /* Cb and Cr */
     for (int y = 0; y < video_codec->frame->height/2; y++) {
-        for (int x = 0; x < video_codec->frame->width/2; x++) {
-            video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x] =
-                (video_codec->inverted_data[1][y * video_codec->frame->linesize[1] + x] +
+        for (int x = 0; x < video_codec->frame->linesize[1]; x++) {
+            int byte = (video_codec->inverted_data[1][y * video_codec->frame->linesize[1] + x] +
                 video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x]) / 2;
-            video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x] =
-                (video_codec->inverted_data[2][y * video_codec->frame->linesize[2] + x] +
+            if (byte > 255) {
+                byte = 255;
+            }   
+            video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x] = byte;
+
+            byte = (video_codec->inverted_data[2][y * video_codec->frame->linesize[2] + x] +
                 video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x]) / 2;
+            if (byte > 255) {
+                byte = 255;
+            }
+            video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x] = byte;
         }
     }
 }
 
 int write_inverted_frame_yuv420p(VideoCodec *video_codec) {
+    for (int i = 0; i < 3; i++) {
+        printf("The frame->data[%d] has a width of %d, height of %d, and linesize of %d\n",
+                i, video_codec->frame->width, video_codec->frame->height, 
+                video_codec->frame->linesize[i]);
+    }
+
+    // linesize is the width of your image in memory for each color channel. 
+    // It may greater or equal to w, for memory alignment issue.
     video_codec->inverted_data[0] = (uint8_t *) malloc(sizeof(uint8_t) * 
-                    video_codec->frame->width * video_codec->frame->height);
+                    video_codec->frame->linesize[0] * video_codec->frame->height);
     video_codec->inverted_data[1] = (uint8_t *) malloc(sizeof(uint8_t) * 
-                    video_codec->frame->width / 2 * video_codec->frame->height);
+                    video_codec->frame->linesize[1] * video_codec->frame->height);
     video_codec->inverted_data[2] = (uint8_t *) malloc(sizeof(uint8_t) * 
-                    video_codec->frame->width / 2 * video_codec->frame->height);
+                    video_codec->frame->linesize[2] * video_codec->frame->height);
     
     if (video_codec->inverted_data[0] == NULL || video_codec->inverted_data[1] == NULL || 
         video_codec->inverted_data[2] == NULL) {
@@ -83,7 +105,7 @@ int write_inverted_frame_yuv420p(VideoCodec *video_codec) {
 
     /* Y */
     for (int y = 0; y < video_codec->frame->height; y++) {
-        for (int x = 0; x < video_codec->frame->width; x++) {
+        for (int x = 0; x < video_codec->frame->linesize[0]; x++) {
             video_codec->inverted_data[0][y * video_codec->frame->linesize[0] + x] =
                 255 - video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x];
         }
@@ -91,7 +113,7 @@ int write_inverted_frame_yuv420p(VideoCodec *video_codec) {
 
     /* Cb and Cr */
     for (int y = 0; y < video_codec->frame->height/2; y++) {
-        for (int x = 0; x < video_codec->frame->width/2; x++) {
+        for (int x = 0; x < video_codec->frame->linesize[1]; x++) {
             video_codec->inverted_data[1][y * video_codec->frame->linesize[1] + x] =
                 255 - video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x];
             video_codec->inverted_data[2][y * video_codec->frame->linesize[2] + x] =
@@ -105,6 +127,15 @@ int process_video(AVFormatContext *iformat_context, AVFormatContext *oformat_con
                   VideoCodec *video_codec , AVPacket *packet, int stream_index) {
     int ret;
     while (1) {
+
+        if (video_codec->frame == NULL) {
+            video_codec->frame = av_frame_alloc();
+        }
+        if (video_codec->frame == NULL) {
+            fprintf(stderr, "ERROR:   Couldn't allocate frame\n");
+            return AVERROR(ENOMEM);
+        }
+
         ret = avcodec_receive_frame(video_codec->decoder_context, video_codec->frame);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
         if (ret < 0) {
@@ -180,7 +211,7 @@ int main(int argc, char *argv[]) {
 
     int video_stream = -1;
 
-    for (int i = 0; i < iformat_context->nb_streams; i++) {
+    for (unsigned int i = 0; i < iformat_context->nb_streams; i++) {
         AVStream *stream = avformat_new_stream(oformat_context, NULL);
         if (stream == NULL) {
             fprintf(stderr, "ERROR:   Failed to add a new stream to the output file\n");
@@ -334,8 +365,11 @@ int main(int argc, char *argv[]) {
     avcodec_free_context(&video_codec.decoder_context);
     avcodec_free_context(&video_codec.encoder_context);
     av_frame_free(&video_codec.frame);
-    for (int i = 0; i < 8; i++)
-        free(video_codec.inverted_data[i]);
+    for (int i = 0; i < 8; i++) {
+        printf("%p\n", video_codec.inverted_data[i]);
+        if (video_codec.inverted_data[i] != NULL)
+            free(video_codec.inverted_data[i]);
+    }
     if (oformat_context && !(oformat_context->oformat->flags & AVFMT_NOFILE))
         avio_closep(&oformat_context->pb);
     avformat_free_context(oformat_context);
