@@ -1,0 +1,85 @@
+#include "algorithms.h"
+#include "types.h"
+
+int write_inverted_frame_yuv420p(VideoCodec *video_codec) {
+    for (int i = 0; i < 3; i++) {
+        printf("The frame->data[%d] has a width of %d, height of %d, and linesize of %d\n",
+                i, video_codec->frame->width, video_codec->frame->height, 
+                video_codec->frame->linesize[i]);
+    }
+
+    // linesize is the width of your image in memory for each color channel. 
+    // It may greater or equal to w, for memory alignment issue.
+    video_codec->inverted_data[0] = (uint8_t *) malloc(sizeof(uint8_t) * 
+                    video_codec->frame->linesize[0] * video_codec->frame->height);
+    video_codec->inverted_data[1] = (uint8_t *) malloc(sizeof(uint8_t) * 
+                    video_codec->frame->linesize[1] * video_codec->frame->height);
+    video_codec->inverted_data[2] = (uint8_t *) malloc(sizeof(uint8_t) * 
+                    video_codec->frame->linesize[2] * video_codec->frame->height);
+    
+    if (video_codec->inverted_data[0] == NULL || video_codec->inverted_data[1] == NULL || 
+        video_codec->inverted_data[2] == NULL) {
+        fprintf(stderr, "ERROR:   Failed to allocate memory for inverted frames\n");
+        return -1;
+    }
+
+    /* Y */
+    for (int y = 0; y < video_codec->frame->height; y++) {
+        for (int x = 0; x < video_codec->frame->linesize[0]; x++) {
+            video_codec->inverted_data[0][y * video_codec->frame->linesize[0] + x] =
+                255 - video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x];
+        }
+    }
+
+    /* Cb and Cr */
+    for (int y = 0; y < video_codec->frame->height/2; y++) {
+        for (int x = 0; x < video_codec->frame->linesize[1]; x++) {
+            video_codec->inverted_data[1][y * video_codec->frame->linesize[1] + x] =
+                255 - video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x];
+            video_codec->inverted_data[2][y * video_codec->frame->linesize[2] + x] =
+                255 - video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x];
+        }
+    }
+    return 0;
+}
+
+int overlay_frames_yuv420p(VideoCodec *video_codec) {
+    int ret = 0;
+    if (video_codec->inverted_data[0] == NULL) {
+        ret = write_inverted_frame_yuv420p(video_codec);
+        if (ret < 0) return ret;
+    }
+
+    /* Y */
+    for (int y = 0; y < video_codec->frame->height; y++) {
+        for (int x = 0; x < video_codec->frame->linesize[0]; x++) {
+            int byte = (video_codec->inverted_data[0][y * video_codec->frame->linesize[0] + x] +
+                video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x]) / 2;
+            if (byte > 255) {
+                byte = 255;
+            }
+            video_codec->frame->data[0][y * video_codec->frame->linesize[0] + x] = byte;
+        }
+    }
+
+    /* Cb and Cr */
+    for (int y = 0; y < video_codec->frame->height/2; y++) {
+        for (int x = 0; x < video_codec->frame->linesize[1]; x++) {
+            int byte = (video_codec->inverted_data[1][y * video_codec->frame->linesize[1] + x] +
+                video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x]) / 2;
+            if (byte > 255) {
+                byte = 255;
+            }   
+            video_codec->frame->data[1][y * video_codec->frame->linesize[1] + x] = byte;
+
+            byte = (video_codec->inverted_data[2][y * video_codec->frame->linesize[2] + x] +
+                video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x]) / 2;
+            if (byte > 255) {
+                byte = 255;
+            }
+            video_codec->frame->data[2][y * video_codec->frame->linesize[2] + x] = byte;
+        }
+    }
+
+    return ret;
+}

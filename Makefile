@@ -16,11 +16,8 @@ CFLAGS  = -g -Wall -Wextra
 # LFLAGS = -L/usr/local/Cellar/ffmpeg/6.0_2/lib
 LIBS =  -lavformat -lavcodec -lavutil
 
-main: main.o
-	$(CC) $(CFLAGS) -o MotionExtraction main.o  $(LIBS)
-
-main.o: src/main.c
-	$(CC) $(CFLAGS) -c src/main.c
+main: src/*.c src/*.h
+	$(CC) $(CFLAGS) -o MotionExtraction src/*.c src/*.h  $(LIBS)
 
 clean:
 	$(RM) MotionExtraction *.o *~
