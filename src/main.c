@@ -4,8 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "algorithms.h"
-#include "types.h"
+#include "extraction.h"
 
 static int open_input_file(AVFormatContext **ifmt, const char *filename) {
         int ret = avformat_open_input(ifmt, filename, NULL, NULL);
@@ -77,7 +76,8 @@ static int create_output_streams(AVFormatContext *ifmt, AVFormatContext *ofmt,
         return 0;
 }
 
-static int configure_decoder(AVFormatContext *ifmt, int video, VideoCodec *vc) {
+static int configure_decoder(AVFormatContext *ifmt,
+                             AVCodecContext **decoder_ctx, int video) {
         const AVCodec *decoder =
             avcodec_find_decoder(ifmt->streams[video]->codecpar->codec_id);
         if (decoder == NULL) {
@@ -85,8 +85,8 @@ static int configure_decoder(AVFormatContext *ifmt, int video, VideoCodec *vc) {
                 return -1;
         }
 
-        AVCodecContext *decoder_context = avcodec_alloc_context3(decoder);
-        if (decoder_context == NULL) {
+        (*decoder_ctx) = avcodec_alloc_context3(decoder);
+        if ((*decoder_ctx) == NULL) {
                 fprintf(
                     stderr,
                     "ERROR:   Couldn't allocate the decoder context with the "
@@ -94,7 +94,7 @@ static int configure_decoder(AVFormatContext *ifmt, int video, VideoCodec *vc) {
                 return -1;
         }
 
-        int ret = avcodec_parameters_to_context(decoder_context,
+        int ret = avcodec_parameters_to_context((*decoder_ctx),
                                                 ifmt->streams[video]->codecpar);
         if (ret < 0) {
                 fprintf(
@@ -104,14 +104,14 @@ static int configure_decoder(AVFormatContext *ifmt, int video, VideoCodec *vc) {
                 return ret;
         }
 
-        ret = avcodec_open2(decoder_context, decoder, NULL);
+        ret = avcodec_open2((*decoder_ctx), decoder, NULL);
         if (ret < 0) {
                 fprintf(stderr,
                         "ERROR:   Failed to open the decoder context\n");
                 return ret;
         }
 
-        if (decoder_context->pix_fmt != AV_PIX_FMT_YUV420P) {
+        if ((*decoder_ctx)->pix_fmt != AV_PIX_FMT_YUV420P) {
                 fprintf(
                     stderr,
                     "ERROR:   Video has a pixel format that is not supported "
@@ -119,13 +119,12 @@ static int configure_decoder(AVFormatContext *ifmt, int video, VideoCodec *vc) {
                 return -1;
         }
 
-        vc->decoder_context = decoder_context;
-
         return 0;
 }
 
 static int configure_encoder(AVFormatContext *ifmt, AVFormatContext *ofmt,
-                             int video, VideoCodec *vc) {
+                             AVCodecContext **encoder_ctx,
+                             AVCodecContext *decoder_ctx, int video) {
         const AVCodec *encoder =
             avcodec_find_encoder(ofmt->streams[video]->codecpar->codec_id);
         if (encoder == NULL) {
@@ -133,8 +132,8 @@ static int configure_encoder(AVFormatContext *ifmt, AVFormatContext *ofmt,
                 return -1;
         }
 
-        AVCodecContext *encoder_context = avcodec_alloc_context3(encoder);
-        if (encoder_context == NULL) {
+        (*encoder_ctx) = avcodec_alloc_context3(encoder);
+        if ((*encoder_ctx) == NULL) {
                 fprintf(
                     stderr,
                     "ERROR:   Couldn't allocate the encoder context with the "
@@ -142,23 +141,28 @@ static int configure_encoder(AVFormatContext *ifmt, AVFormatContext *ofmt,
                 return -1;
         }
 
-        int ret = avcodec_parameters_to_context(encoder_context,
-                                                ofmt->streams[video]->codecpar);
-        if (ret < 0) {
-                fprintf(
-                    stderr,
-                    "ERROR:   Failed to fill the encoder context based on the "
-                    "values from codec parameters\n");
-                return ret;
-        }
+        /* This line is leaking memory */
+        // int ret = avcodec_parameters_to_context((*encoder_ctx),
+        //                                         ofmt->streams[video]->codecpar);
+        // if (ret < 0) {
+        //         fprintf(
+        //             stderr,
+        //             "ERROR:   Failed to fill the encoder context based on the
+        //             " "values from codec parameters\n");
+        //         return ret;
+        // }
 
-        encoder_context->time_base =
+        (*encoder_ctx)->height = decoder_ctx->height;
+        (*encoder_ctx)->width = decoder_ctx->width;
+        (*encoder_ctx)->sample_aspect_ratio = decoder_ctx->sample_aspect_ratio;
+        (*encoder_ctx)->pix_fmt = decoder_ctx->pix_fmt;
+        (*encoder_ctx)->time_base =
             av_inv_q(av_guess_frame_rate(ifmt, ifmt->streams[video], NULL));
 
         if (ofmt->oformat->flags & AVFMT_GLOBALHEADER)
-                encoder_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+                (*encoder_ctx)->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-        ret = avcodec_open2(encoder_context, encoder, NULL);
+        int ret = avcodec_open2((*encoder_ctx), encoder, NULL);
         if (ret < 0) {
                 fprintf(stderr,
                         "ERROR:   Failed to open the encoder context\n");
@@ -166,28 +170,95 @@ static int configure_encoder(AVFormatContext *ifmt, AVFormatContext *ofmt,
         }
 
         ret = avcodec_parameters_from_context(ofmt->streams[video]->codecpar,
-                                              encoder_context);
+                                              (*encoder_ctx));
         if (ret < 0) {
                 fprintf(stderr,
                         "ERROR:   Failed avcodec_parameters_from_context()\n");
                 return ret;
         }
 
-        vc->encoder_context = encoder_context;
-
         return 0;
 }
 
-int process_video(AVFormatContext *iformat_context,
-                  AVFormatContext *oformat_context, VideoCodec *video_codec,
-                  AVPacket *packet, int stream_index);
+static int mux(AVFormatContext *iformat_context,
+               AVFormatContext *oformat_context, AVPacket *packet) {
+        av_packet_rescale_ts(
+            packet, iformat_context->streams[packet->stream_index]->time_base,
+            oformat_context->streams[packet->stream_index]->time_base);
 
-int mux(AVFormatContext *iformat_context, AVFormatContext *oformat_context,
-        AVPacket *packet, int stream_index);
+        int ret = av_interleaved_write_frame(oformat_context, packet);
+        if (ret < 0) {
+                fprintf(stderr,
+                        "ERROR:   Failed to write packet to output file\n");
+                return ret;
+        }
+        return 0;
+}
 
-int encode_video(AVFormatContext *iformat_context,
-                 AVFormatContext *oformat_context, VideoCodec *video_codec,
-                 AVPacket *packet, int stream_index);
+static int recieve_packets(AVCodecContext *encoder_ctx, AVPacket *packet,
+                           AVFormatContext *ifmt_ctx,
+                           AVFormatContext *ofmt_ctx) {
+        int ret;
+        while (1) {
+                av_packet_unref(packet);
+
+                ret = avcodec_receive_packet(encoder_ctx, packet);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                        return 0;
+                if (ret < 0) {
+                        fprintf(stderr, "ERROR:   Failed recieving "
+                                        "packet from encoder\n");
+                        return ret;
+                }
+
+                ret = mux(ifmt_ctx, ofmt_ctx, packet);
+                if (ret < 0)
+                        return ret;
+        }
+}
+
+static int recieve_frames(AVCodecContext *decoder_ctx,
+                          AVCodecContext *encoder_ctx, AVFrame **frame,
+                          AVFrame **inverted, AVPacket *packet,
+                          AVFormatContext *ifmt_ctx,
+                          AVFormatContext *ofmt_ctx) {
+        int ret;
+        while (1) {
+                ret = avcodec_receive_frame(decoder_ctx, (*frame));
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                        return 0;
+                if (ret < 0) {
+                        fprintf(stderr, "ERROR:   Failed recieving "
+                                        "frame from decoder\n");
+                        return ret;
+                }
+
+                (*frame)->pts = (*frame)->best_effort_timestamp;
+
+                AVFrame *temp = overlay_frames_yuv420p((*frame), inverted);
+                av_frame_unref((*frame));
+                av_frame_free(frame);
+                (*frame) = temp;
+                temp = NULL;
+
+                ret = avcodec_send_frame(encoder_ctx, (*frame));
+                if (ret < 0) {
+                        fprintf(stderr,
+                                "ERROR:   Failed sending frame "
+                                "to encoder, "
+                                "(error: %s)\n",
+                                av_err2str(ret));
+                        return ret;
+                }
+
+                ret = recieve_packets(encoder_ctx, packet, ifmt_ctx, ofmt_ctx);
+                if (ret < 0) {
+                        return ret;
+                }
+
+                av_frame_unref((*frame));
+        }
+}
 
 int main(int argc, char *argv[]) {
         // if (argc != 3) {
@@ -197,52 +268,46 @@ int main(int argc, char *argv[]) {
         const char *ifile = "world.mov";
         const char *ofile = "new.mov";
 
-        AVFormatContext *iformat_context = NULL;
-        AVFormatContext *oformat_context = NULL;
-        VideoCodec video_codec = {0};
+        AVFormatContext *ifmt_ctx = NULL;
+        AVFormatContext *ofmt_ctx = NULL;
+        AVCodecContext *decoder_ctx = NULL;
+        AVCodecContext *encoder_ctx = NULL;
         AVPacket *packet = NULL;
-
-        video_codec.frame = av_frame_alloc();
-        if (video_codec.frame == NULL) {
-                fprintf(stderr, "ERROR:   Couldn't allocate frame\n");
-                goto cleanup;
-        }
-        video_codec.inverted_data[0] = NULL;
-
+        AVFrame *frame = NULL;
+        AVFrame *inverted = NULL;
         int video_stream = -1;
 
-        int ret = open_input_file(&iformat_context, ifile);
+        int ret = open_input_file(&ifmt_ctx, ifile);
         if (ret < 0) {
                 goto cleanup;
         }
 
-        av_dump_format(iformat_context, 0, ifile, 0);
+        av_dump_format(ifmt_ctx, 0, ifile, 0);
 
-        ret = open_output_file(&oformat_context, ofile);
+        ret = open_output_file(&ofmt_ctx, ofile);
         if (ret < 0) {
                 goto cleanup;
         }
 
-        ret = create_output_streams(iformat_context, oformat_context,
-                                    &video_stream);
+        ret = create_output_streams(ifmt_ctx, ofmt_ctx, &video_stream);
         if (ret < 0) {
                 goto cleanup;
         }
 
-        ret = configure_decoder(iformat_context, video_stream, &video_codec);
+        ret = configure_decoder(ifmt_ctx, &decoder_ctx, video_stream);
         if (ret < 0) {
                 goto cleanup;
         }
 
-        ret = configure_encoder(iformat_context, oformat_context, video_stream,
-                                &video_codec);
+        ret = configure_encoder(ifmt_ctx, ofmt_ctx, &encoder_ctx, decoder_ctx,
+                                video_stream);
         if (ret < 0) {
                 goto cleanup;
         }
 
-        av_dump_format(oformat_context, 0, ofile, 1);
+        av_dump_format(ofmt_ctx, 0, ofile, 1);
 
-        ret = avformat_write_header(oformat_context, NULL);
+        ret = avformat_write_header(ofmt_ctx, NULL);
         if (ret < 0) {
                 fprintf(stderr,
                         "ERROR:   Failed to write header to the output file\n");
@@ -254,55 +319,59 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "ERROR:   Couldn't allocate packet\n");
                 goto cleanup;
         }
+        frame = av_frame_alloc();
+        if (frame == NULL) {
+                fprintf(stderr, "ERROR:   Couldn't allocate frame\n");
+                goto cleanup;
+        }
 
-        while (av_read_frame(iformat_context, packet) >= 0) {
-                int streamIndex = packet->stream_index;
+        while (av_read_frame(ifmt_ctx, packet) >= 0) {
+                int stream_index = packet->stream_index;
 
-                if (iformat_context->streams[streamIndex]
-                        ->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-                        ret = avcodec_send_packet(video_codec.decoder_context,
-                                                  packet);
+                if (ifmt_ctx->streams[stream_index]->codecpar->codec_type !=
+                    AVMEDIA_TYPE_VIDEO) {
+                        ret = mux(ifmt_ctx, ofmt_ctx, packet);
+                        if (ret < 0) {
+                                goto cleanup;
+                        }
+                } else {
+                        ret = avcodec_send_packet(decoder_ctx, packet);
                         if (ret < 0) {
                                 fprintf(stderr, "ERROR:   Failed sending "
                                                 "packet to decoder\n");
                                 goto cleanup;
                         }
-
-                        ret = process_video(iformat_context, oformat_context,
-                                            &video_codec, packet, streamIndex);
-                        if (ret < 0)
+                        ret = recieve_frames(decoder_ctx, encoder_ctx, &frame,
+                                             &inverted, packet, ifmt_ctx,
+                                             ofmt_ctx);
+                        if (ret < 0) {
                                 goto cleanup;
-                } else {
-                        ret = mux(iformat_context, oformat_context, packet,
-                                  streamIndex);
-                        if (ret < 0)
-                                goto cleanup;
+                        }
                 }
 
                 av_packet_unref(packet);
         }
 
-        ret = avcodec_send_packet(video_codec.decoder_context, NULL);
+        ret = avcodec_send_packet(decoder_ctx, NULL);
         if (ret < 0) {
                 fprintf(stderr, "ERROR:   Failed to flush decoder\n");
                 goto cleanup;
         }
-        ret = process_video(iformat_context, oformat_context, &video_codec,
-                            packet, video_stream);
+        ret = recieve_frames(decoder_ctx, encoder_ctx, &frame, &inverted,
+                             packet, ifmt_ctx, ofmt_ctx);
         if (ret < 0)
                 goto cleanup;
 
-        ret = avcodec_send_frame(video_codec.encoder_context, NULL);
+        ret = avcodec_send_frame(encoder_ctx, NULL);
         if (ret < 0) {
                 fprintf(stderr, "ERROR:   Failed to flush encoder\n");
                 goto cleanup;
         }
-        ret = encode_video(iformat_context, oformat_context, &video_codec,
-                           packet, video_stream);
+        ret = recieve_packets(encoder_ctx, packet, ifmt_ctx, ofmt_ctx);
         if (ret < 0)
                 goto cleanup;
 
-        ret = av_write_trailer(oformat_context);
+        ret = av_write_trailer(ofmt_ctx);
         if (ret < 0) {
                 fprintf(stderr,
                         "ERROR:   Couldn't wirte output file trailer\n");
@@ -311,112 +380,14 @@ int main(int argc, char *argv[]) {
 
 cleanup:
         av_packet_free(&packet);
-        avcodec_free_context(&video_codec.decoder_context);
-        avcodec_free_context(&video_codec.encoder_context);
-        av_frame_free(&video_codec.frame);
-        for (int i = 0; i < 8; i++) {
-                free(video_codec.inverted_data[i]);
-        }
-        if (oformat_context &&
-            !(oformat_context->oformat->flags & AVFMT_NOFILE))
-                avio_closep(&oformat_context->pb);
-        avformat_free_context(oformat_context);
-        avformat_close_input(&iformat_context);
+        avcodec_free_context(&decoder_ctx);
+        avcodec_free_context(&encoder_ctx);
+        av_frame_free(&frame);
+        av_frame_free(&inverted);
+        if (ofmt_ctx && !(ofmt_ctx->oformat->flags & AVFMT_NOFILE))
+                avio_closep(&ofmt_ctx->pb);
+        avformat_free_context(ofmt_ctx);
+        avformat_close_input(&ifmt_ctx);
 
         return ret;
-}
-
-int process_video(AVFormatContext *iformat_context,
-                  AVFormatContext *oformat_context, VideoCodec *video_codec,
-                  AVPacket *packet, int stream_index) {
-        int ret;
-        while (1) {
-
-                if (video_codec->frame == NULL) {
-                        video_codec->frame = av_frame_alloc();
-                }
-                if (video_codec->frame == NULL) {
-                        fprintf(stderr, "ERROR:   Couldn't allocate frame\n");
-                        return AVERROR(ENOMEM);
-                }
-
-                ret = avcodec_receive_frame(video_codec->decoder_context,
-                                            video_codec->frame);
-                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-                        break;
-                if (ret < 0) {
-                        fprintf(
-                            stderr,
-                            "ERROR:   Failed recieving frame from decoder\n");
-                        return ret;
-                }
-
-                video_codec->frame->pts =
-                    video_codec->frame->best_effort_timestamp;
-
-                overlay_frames_yuv420p(video_codec);
-
-                ret = avcodec_send_frame(video_codec->encoder_context,
-                                         video_codec->frame);
-                if (ret < 0) {
-                        fprintf(stderr,
-                                "ERROR:   Failed sending frame to encoder, "
-                                "(error: %s)\n",
-                                av_err2str(ret));
-                        return ret;
-                }
-
-                ret = encode_video(iformat_context, oformat_context,
-                                   video_codec, packet, stream_index);
-                if (ret < 0)
-                        return ret;
-        }
-
-        return 0;
-}
-
-int encode_video(AVFormatContext *iformat_context,
-                 AVFormatContext *oformat_context, VideoCodec *video_codec,
-                 AVPacket *packet, int stream_index) {
-        int ret;
-        while (1) {
-                av_packet_unref(packet);
-
-                ret = avcodec_receive_packet(video_codec->encoder_context,
-                                             packet);
-                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-                        break;
-                if (ret < 0) {
-                        fprintf(
-                            stderr,
-                            "ERROR:   Failed recieving packet from encoder\n");
-                        return ret;
-                }
-
-                ret =
-                    mux(iformat_context, oformat_context, packet, stream_index);
-                if (ret < 0)
-                        return ret;
-        }
-
-        // av_frame_unref(video_codec->frame);
-        av_frame_free(&video_codec->frame);
-        video_codec->frame = NULL;
-
-        return 0;
-}
-
-int mux(AVFormatContext *iformat_context, AVFormatContext *oformat_context,
-        AVPacket *packet, int stream_index) {
-        av_packet_rescale_ts(packet,
-                             iformat_context->streams[stream_index]->time_base,
-                             oformat_context->streams[stream_index]->time_base);
-
-        int ret = av_interleaved_write_frame(oformat_context, packet);
-        if (ret < 0) {
-                fprintf(stderr,
-                        "ERROR:   Failed to write packet to output file\n");
-                return ret;
-        }
-        return 0;
 }
