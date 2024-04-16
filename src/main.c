@@ -141,17 +141,6 @@ static int configure_encoder(AVFormatContext *ifmt, AVFormatContext *ofmt,
                 return -1;
         }
 
-        /* This line is leaking memory */
-        // int ret = avcodec_parameters_to_context((*encoder_ctx),
-        //                                         ofmt->streams[video]->codecpar);
-        // if (ret < 0) {
-        //         fprintf(
-        //             stderr,
-        //             "ERROR:   Failed to fill the encoder context based on the
-        //             " "values from codec parameters\n");
-        //         return ret;
-        // }
-
         (*encoder_ctx)->height = decoder_ctx->height;
         (*encoder_ctx)->width = decoder_ctx->width;
         (*encoder_ctx)->sample_aspect_ratio = decoder_ctx->sample_aspect_ratio;
