@@ -3,6 +3,8 @@
 
 #include <libavcodec/avcodec.h>
 
+#include "utils.h"
+
 struct frame_queue {
         struct queue_node *head;
         struct queue_node *tail;

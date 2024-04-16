@@ -53,9 +53,11 @@ AVFrame *frozen(struct frame_queue *q, AVFrame *frame) {
                 q->tail = node;
                 q->size = 1;
         }
-        return q->head->frame;
+        return deep_copy_frame(q->head->frame);
 }
 
+
+// alwasys returns deep copy
 AVFrame *push_pop_queue(struct frame_queue *q, AVFrame *frame) {
         if (q->cap == 0) {
                 return frozen(q, frame);
@@ -72,11 +74,11 @@ AVFrame *push_pop_queue(struct frame_queue *q, AVFrame *frame) {
         q->size += 1;
 
         if (q->size <= q->cap) {
-                return q->tail->frame;
+                return deep_copy_frame(q->tail->frame);
         }
 
         struct queue_node *prev_tail = q->tail;
-        int res = prev_tail-> frame;
+        AVFrame *res = prev_tail-> frame;
         prev_tail->frame = NULL;
 
         q->tail = q->tail->prev;

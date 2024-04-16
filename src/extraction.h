@@ -3,6 +3,9 @@
 
 #include <libavcodec/avcodec.h>
 
-AVFrame *overlay_frames_yuv420p(AVFrame *original, AVFrame **inverted);
+#include "queue.h"
+#include "utils.h"
+
+AVFrame *overlay_frames_yuv420p(AVFrame **cur, struct frame_queue *q);
 
 #endif /* EXTRACTION_H */

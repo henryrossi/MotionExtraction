@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "extraction.h"
+#include "queue.h"
 
 static int open_input_file(AVFormatContext **ifmt, const char *filename) {
         int ret = avformat_open_input(ifmt, filename, NULL, NULL);
@@ -208,7 +209,7 @@ static int recieve_packets(AVCodecContext *encoder_ctx, AVPacket *packet,
 
 static int recieve_frames(AVCodecContext *decoder_ctx,
                           AVCodecContext *encoder_ctx, AVFrame **frame,
-                          AVFrame **inverted, AVPacket *packet,
+                          struct frame_queue *q, AVPacket *packet,
                           AVFormatContext *ifmt_ctx,
                           AVFormatContext *ofmt_ctx) {
         int ret;
@@ -224,11 +225,7 @@ static int recieve_frames(AVCodecContext *decoder_ctx,
 
                 (*frame)->pts = (*frame)->best_effort_timestamp;
 
-                AVFrame *temp = overlay_frames_yuv420p((*frame), inverted);
-                av_frame_unref((*frame));
-                av_frame_free(frame);
-                (*frame) = temp;
-                temp = NULL;
+                (*frame) = overlay_frames_yuv420p(frame, q);
 
                 ret = avcodec_send_frame(encoder_ctx, (*frame));
                 if (ret < 0) {
@@ -261,9 +258,9 @@ int main(int argc, char *argv[]) {
         AVFormatContext *ofmt_ctx = NULL;
         AVCodecContext *decoder_ctx = NULL;
         AVCodecContext *encoder_ctx = NULL;
+        struct frame_queue *q = init_queue(20);
         AVPacket *packet = NULL;
         AVFrame *frame = NULL;
-        AVFrame *inverted = NULL;
         int video_stream = -1;
 
         int ret = open_input_file(&ifmt_ctx, ifile);
@@ -331,8 +328,7 @@ int main(int argc, char *argv[]) {
                                 goto cleanup;
                         }
                         ret = recieve_frames(decoder_ctx, encoder_ctx, &frame,
-                                             &inverted, packet, ifmt_ctx,
-                                             ofmt_ctx);
+                                             q, packet, ifmt_ctx, ofmt_ctx);
                         if (ret < 0) {
                                 goto cleanup;
                         }
@@ -346,8 +342,8 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "ERROR:   Failed to flush decoder\n");
                 goto cleanup;
         }
-        ret = recieve_frames(decoder_ctx, encoder_ctx, &frame, &inverted,
-                             packet, ifmt_ctx, ofmt_ctx);
+        ret = recieve_frames(decoder_ctx, encoder_ctx, &frame, q, packet,
+                             ifmt_ctx, ofmt_ctx);
         if (ret < 0)
                 goto cleanup;
 
@@ -369,10 +365,10 @@ int main(int argc, char *argv[]) {
 
 cleanup:
         av_packet_free(&packet);
+        av_frame_free(&frame);
+        free_queue(q);
         avcodec_free_context(&decoder_ctx);
         avcodec_free_context(&encoder_ctx);
-        av_frame_free(&frame);
-        av_frame_free(&inverted);
         if (ofmt_ctx && !(ofmt_ctx->oformat->flags & AVFMT_NOFILE))
                 avio_closep(&ofmt_ctx->pb);
         avformat_free_context(ofmt_ctx);

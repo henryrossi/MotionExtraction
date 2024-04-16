@@ -15,15 +15,17 @@ CC = gcc
 CFLAGS  = -g -Wall -Wextra
 # LFLAGS = -L/usr/local/Cellar/ffmpeg/6.0_2/lib
 LIBS =  -lavformat -lavcodec -lavutil
-OBJS = main.o extraction.o
+OBJS = main.o extraction.o queue.o utils.o
 
 VPATH = src
 
 MotionExtraction : $(OBJS)
 	$(CC) $(CFLAGS) -o MotionExtraction $(OBJS) $(LIBS)
 
-main.o : extraction.h
-extraction.o : extraction.h
+main.o : extraction.h queue.h
+extraction.o : extraction.h queue.h utils.h
+queue.o: queue.h utils.h
+utils.o: utils.h
 
 .PHONY : clean
 clean :
