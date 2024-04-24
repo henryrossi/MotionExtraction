@@ -3,9 +3,93 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "extraction.h"
 #include "queue.h"
+
+struct parameters {
+        char *ifile;
+        char *ofile;
+        int delay;
+};
+
+static int help_check(int argc, char *argv[]) {
+        for (int i = 0; i < argc; i++) {
+                if (strcmp("-h", argv[i]) == 0 ||
+                    strcmp("--help", argv[i]) == 0) {
+                        // "Usage: %s <input file> <output file>\n",
+                        printf("Here's the help display...\n");
+                        return 1;
+                }
+        }
+        if (argc == 1) {
+                printf("Here's the help display...\n");
+                return 1;
+        }
+        return 0;
+}
+
+static int parse_args(int argc, char *argv[], struct parameters *params) {
+        int ret;
+        // moex
+
+        // ./ME, ./ME -h, and ./ME --help all display help info
+        // --freeze, -f set delay to 0
+        // --delay <num> sets delay to num
+
+        // if user doesn't pass an argument prompt them!
+
+        // prompt for conformation if output file is being overwritten
+
+        // If possible, make arguments, flags and subcommands order-independent.
+
+        ret = help_check(argc, argv);
+        if (ret != 0) {
+                return ret;
+        }
+
+        for (int i = 1; i < argc; i++) {
+                if (argv[i][0] == '-') {
+                        if (strcmp("-f", argv[i]) == 0 ||
+                            strcmp("--freeze", argv[i]) == 0) {
+                                params->delay = 0;
+                        } else if (strcmp("--delay", argv[i]) == 0) {
+                                if (i + 1 >= argc) {
+                                        // err, need int value
+                                        printf("--delay is last arg\n");
+                                        continue;
+                                }
+                                if (argv[i + 1][0] == '-') {
+                                        // err, same as above
+                                        printf("--delay is followed by another "
+                                               "flag\n");
+                                        continue;
+                                }
+                                // ignore delay / freeze  if used together?
+
+                                int val = strtol(argv[i + 1], NULL, 10);
+                                if (val == 0) {
+                                        // failed to parse
+                                        printf("failed to parse --delay arg "
+                                               "value\n");
+                                        continue;
+                                }
+                                params->delay = val;
+                                i++;
+                        }
+                } else {
+                        if (params->ifile == NULL) {
+                                params->ifile = argv[i];
+                        } else if (params->ofile == NULL) {
+                                params->ofile = argv[i];
+                        }
+                }
+        }
+
+        return 0;
+}
 
 static int open_input_file(AVFormatContext **ifmt, const char *filename) {
         int ret = avformat_open_input(ifmt, filename, NULL, NULL);
@@ -247,30 +331,45 @@ static int recieve_frames(AVCodecContext *decoder_ctx,
 }
 
 int main(int argc, char *argv[]) {
-        // if (argc != 3) {
-        //   fprintf(stderr, "Usage: %s <input file> <output file>\n", argv[0]);
-        //   return -1;
-        // }
-        const char *ifile = "world.mov";
-        const char *ofile = "new.mov";
+        av_log_set_level(AV_LOG_QUIET);
+
+        struct parameters params = {.delay = 2};
+
+        int ret = parse_args(argc, argv, &params);
+        switch (ret) {
+        case 1:
+                return 0;
+        case 0:
+                break;
+        default:
+                return ret;
+        }
+
+        printf("Motion Extracting:\n"
+               "       input file - %s\n"
+               "       output file - %s\n"
+               "       delay - %d\n",
+               params.ifile, params.ofile, params.delay);
 
         AVFormatContext *ifmt_ctx = NULL;
         AVFormatContext *ofmt_ctx = NULL;
         AVCodecContext *decoder_ctx = NULL;
         AVCodecContext *encoder_ctx = NULL;
-        struct frame_queue *q = init_queue(20);
+        struct frame_queue *q = init_queue(params.delay);
         AVPacket *packet = NULL;
         AVFrame *frame = NULL;
         int video_stream = -1;
 
-        int ret = open_input_file(&ifmt_ctx, ifile);
+        ret = open_input_file(&ifmt_ctx, params.ifile);
         if (ret < 0) {
                 goto cleanup;
         }
 
-        av_dump_format(ifmt_ctx, 0, ifile, 0);
+        // av_log_set_level(AV_LOG_INFO);
+        // av_dump_format(ifmt_ctx, 0, params.ifile, 0);
+        // av_log_set_level(AV_LOG_FATAL);
 
-        ret = open_output_file(&ofmt_ctx, ofile);
+        ret = open_output_file(&ofmt_ctx, params.ofile);
         if (ret < 0) {
                 goto cleanup;
         }
@@ -291,7 +390,9 @@ int main(int argc, char *argv[]) {
                 goto cleanup;
         }
 
-        av_dump_format(ofmt_ctx, 0, ofile, 1);
+        // av_log_set_level(AV_LOG_INFO);
+        // av_dump_format(ofmt_ctx, 0, params.ofile, 1);
+        // av_log_set_level(AV_LOG_FATAL);
 
         ret = avformat_write_header(ofmt_ctx, NULL);
         if (ret < 0) {
