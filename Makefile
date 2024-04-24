@@ -19,8 +19,8 @@ OBJS = main.o extraction.o queue.o utils.o
 
 VPATH = src
 
-MotionExtraction : $(OBJS)
-	$(CC) $(CFLAGS) -o MotionExtraction $(OBJS) $(LIBS)
+moex : $(OBJS)
+	$(CC) $(CFLAGS) -o moex $(OBJS) $(LIBS)
 
 main.o : extraction.h queue.h
 extraction.o : extraction.h queue.h utils.h
@@ -29,4 +29,4 @@ utils.o: utils.h
 
 .PHONY : clean
 clean :
-	$(RM) MotionExtraction $(OBJS)
+	$(RM) moex $(OBJS)

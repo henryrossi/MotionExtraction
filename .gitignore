@@ -52,7 +52,7 @@ Mkfile.old
 dkms.conf
 
 .DS_store
-MotionExtraction
+moex
 *.mov
 *.mp4
 .vscode
