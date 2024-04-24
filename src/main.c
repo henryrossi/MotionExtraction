@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "extraction.h"
 #include "queue.h"
@@ -14,6 +15,15 @@ struct parameters {
         char *ofile;
         int delay;
 };
+
+static int64_t duration;
+// nb_frames
+static AVRational time_base;
+
+static int64_t max_pts = -1;
+
+static time_t last_time = -1;
+static time_t cur_time = -1;
 
 static int help_check(int argc, char *argv[]) {
         for (int i = 0; i < argc; i++) {
@@ -32,7 +42,6 @@ static int help_check(int argc, char *argv[]) {
 }
 
 static int parse_args(int argc, char *argv[], struct parameters *params) {
-        int ret;
         // moex
 
         // ./ME, ./ME -h, and ./ME --help all display help info
@@ -45,7 +54,7 @@ static int parse_args(int argc, char *argv[], struct parameters *params) {
 
         // If possible, make arguments, flags and subcommands order-independent.
 
-        ret = help_check(argc, argv);
+        int ret = help_check(argc, argv);
         if (ret != 0) {
                 return ret;
         }
@@ -150,6 +159,9 @@ static int create_output_streams(AVFormatContext *ifmt, AVFormatContext *ofmt,
                     AVMEDIA_TYPE_VIDEO) {
                         *video_stream = i;
                 }
+
+                duration = ifmt->streams[i]->duration;
+                time_base = ifmt->streams[i]->time_base;
         }
 
         if (*video_stream < 0) {
@@ -254,8 +266,39 @@ static int configure_encoder(AVFormatContext *ifmt, AVFormatContext *ofmt,
         return 0;
 }
 
+static void print_report(int64_t pts) {
+        if (max_pts == -1) {
+                max_pts = pts;
+        }
+        if (pts > max_pts) {
+                max_pts = pts;
+        } else {
+                return;
+        }
+
+        time(&cur_time);
+        if (last_time == -1) {
+                last_time = cur_time;
+        }
+        if (cur_time - last_time < 1) {
+                return;
+        }
+
+        int us = pts * time_base.num % time_base.den;
+        int secs = pts * time_base.num / time_base.den % 60;
+        int mins = pts * time_base.num / time_base.den / 60 % 60;
+        int hours = pts * time_base.num / time_base.den / 3600;
+
+        printf("\033[1A\33[2K\rTime: %02d:%02d:%02d.%02d\n", hours, mins, secs,
+               (100 * us * time_base.num) / time_base.den);
+
+        last_time = cur_time;
+}
+
 static int mux(AVFormatContext *iformat_context,
                AVFormatContext *oformat_context, AVPacket *packet) {
+        print_report(packet->pts);
+
         av_packet_rescale_ts(
             packet, iformat_context->streams[packet->stream_index]->time_base,
             oformat_context->streams[packet->stream_index]->time_base);
@@ -346,9 +389,9 @@ int main(int argc, char *argv[]) {
         }
 
         printf("Motion Extracting:\n"
-               "       input file - %s\n"
-               "       output file - %s\n"
-               "       delay - %d\n",
+               "       Input Video - %s\n"
+               "       Output Video - %s\n"
+               "       delay - %d\n\n",
                params.ifile, params.ofile, params.delay);
 
         AVFormatContext *ifmt_ctx = NULL;
