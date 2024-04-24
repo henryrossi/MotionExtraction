@@ -15,7 +15,7 @@ struct queue_node *create_node(AVFrame *frame) {
 }
 
 void free_node(struct queue_node *node) {
-        if (node->frame == NULL) {
+        if (node->frame != NULL) {
                 av_frame_unref(node->frame);
                 av_frame_free(&node->frame);
         }
