@@ -17,11 +17,8 @@ struct parameters {
 };
 
 static int64_t duration;
-// nb_frames
 static AVRational time_base;
-
 static int64_t max_pts = -1;
-
 static time_t last_time = -1;
 static time_t cur_time = -1;
 
@@ -54,6 +51,9 @@ static int parse_args(int argc, char *argv[], struct parameters *params) {
 
         // If possible, make arguments, flags and subcommands order-independent.
 
+        int frozen = 0;
+        int delay = 0;
+
         int ret = help_check(argc, argv);
         if (ret != 0) {
                 return ret;
@@ -63,28 +63,30 @@ static int parse_args(int argc, char *argv[], struct parameters *params) {
                 if (argv[i][0] == '-') {
                         if (strcmp("-f", argv[i]) == 0 ||
                             strcmp("--freeze", argv[i]) == 0) {
+                                frozen = 1;
                                 params->delay = 0;
                         } else if (strcmp("--delay", argv[i]) == 0) {
-                                if (i + 1 >= argc) {
-                                        // err, need int value
-                                        printf("--delay is last arg\n");
+                                if (i + 1 >= argc || argv[i + 1][0] == '-') {
+                                        // do nothing?
+                                        // prompt user for number
+                                        printf("\033[93mWarning! \033[0m --delay flag is ignored since it's not followed by a number\n");
                                         continue;
                                 }
-                                if (argv[i + 1][0] == '-') {
-                                        // err, same as above
-                                        printf("--delay is followed by another "
-                                               "flag\n");
+
+                                if (strcmp("0", argv[i + 1]) == 0) {
+                                        delay = 1;
+                                        params->delay = 0;
+                                        i++;
                                         continue;
                                 }
-                                // ignore delay / freeze  if used together?
 
                                 int val = strtol(argv[i + 1], NULL, 10);
                                 if (val == 0) {
-                                        // failed to parse
-                                        printf("failed to parse --delay arg "
-                                               "value\n");
-                                        continue;
+                                        fprintf(stderr, "\033[91mError!\033[0m --delay flag must be followed by a number, for example: --delay 10\n"
+                                               "You entered: --delay %s\n", argv[i + 1]);
+                                        return -1;
                                 }
+                                delay = 1;
                                 params->delay = val;
                                 i++;
                         }
@@ -95,6 +97,11 @@ static int parse_args(int argc, char *argv[], struct parameters *params) {
                                 params->ofile = argv[i];
                         }
                 }
+        }
+
+        if (frozen == 1 && delay == 1) {
+                params->delay = 0;
+                printf("\033[93mWarning! \033[0mThe --frozen (-f) flag takes precedent over the --delay flag when both are used.\n");
         }
 
         return 0;
@@ -267,9 +274,6 @@ static int configure_encoder(AVFormatContext *ifmt, AVFormatContext *ofmt,
 }
 
 static void print_report(int64_t pts) {
-        if (max_pts == -1) {
-                max_pts = pts;
-        }
         if (pts > max_pts) {
                 max_pts = pts;
         } else {
@@ -277,19 +281,19 @@ static void print_report(int64_t pts) {
         }
 
         time(&cur_time);
-        if (last_time == -1) {
-                last_time = cur_time;
-        }
         if (cur_time - last_time < 1) {
                 return;
         }
+
+
+        int perc = pts * 100 / duration;
+        printf("\033[1A\33[2K\rProgress: %02d%%   ", perc);
 
         int us = pts * time_base.num % time_base.den;
         int secs = pts * time_base.num / time_base.den % 60;
         int mins = pts * time_base.num / time_base.den / 60 % 60;
         int hours = pts * time_base.num / time_base.den / 3600;
-
-        printf("\033[1A\33[2K\rTime: %02d:%02d:%02d.%02d\n", hours, mins, secs,
+        printf("Time: %02d:%02d:%02d.%02d\n", hours, mins, secs,
                (100 * us * time_base.num) / time_base.den);
 
         last_time = cur_time;
@@ -388,11 +392,15 @@ int main(int argc, char *argv[]) {
                 return ret;
         }
 
-        printf("Motion Extracting:\n"
-               "       Input Video - %s\n"
-               "       Output Video - %s\n"
-               "       delay - %d\n\n",
-               params.ifile, params.ofile, params.delay);
+        printf("\033[1mMotion Extracting\033[0m\n"
+               "  Input Video: %s\n"
+               "  Output Video: %s\n",
+               params.ifile, params.ofile);
+        char *fr_msg = "";
+        if (params.delay == 0) {
+                fr_msg = "(Frozen)";
+        }
+        printf("  delay: %d %s\n\n", params.delay, fr_msg);
 
         AVFormatContext *ifmt_ctx = NULL;
         AVFormatContext *ofmt_ctx = NULL;
@@ -506,6 +514,18 @@ int main(int argc, char *argv[]) {
                         "ERROR:   Couldn't wirte output file trailer\n");
                 goto cleanup;
         }
+
+
+        int perc = 100;
+        printf("\033[1A\33[2K\rProgress: %02d%%   ", perc);
+
+        int us = duration * time_base.num % time_base.den;
+        int secs = duration * time_base.num / time_base.den % 60;
+        int mins = duration * time_base.num / time_base.den / 60 % 60;
+        int hours = duration * time_base.num / time_base.den / 3600;
+        printf("Time: %02d:%02d:%02d.%02d\n", hours, mins, secs,
+               (100 * us * time_base.num) / time_base.den);
+
 
 cleanup:
         av_packet_free(&packet);
