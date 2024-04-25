@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <time.h>
 
 #include "extraction.h"
@@ -22,17 +21,30 @@ static int64_t max_pts = -1;
 static time_t last_time = -1;
 static time_t cur_time = -1;
 
+static void print_help(char *argv[]) {
+        printf("Usage: %s [--help | -h] [--freeze | -f] [--delay <number>]\n"
+               "       %*s <input file> <output file>\n"
+               "\n",
+               argv[0], (int)strlen(argv[0]), "");
+        printf("Getting help:\n"
+               "   --help (or -h)     print basic options\n"
+               "\n");
+        printf("Motion extraction options:\n"
+               "   --delay <number>   set extraction frame delay\n"
+               "   --freeze (or -f)   extract relative to the first frame\n"
+               "\n");
+}
+
 static int help_check(int argc, char *argv[]) {
         for (int i = 0; i < argc; i++) {
                 if (strcmp("-h", argv[i]) == 0 ||
                     strcmp("--help", argv[i]) == 0) {
-                        // "Usage: %s <input file> <output file>\n",
-                        printf("Here's the help display...\n");
+                        print_help(argv);
                         return 1;
                 }
         }
         if (argc == 1) {
-                printf("Here's the help display...\n");
+                print_help(argv);
                 return 1;
         }
         return 0;
@@ -47,12 +59,13 @@ static int parse_args(int argc, char *argv[], struct parameters *params) {
 
         // if user doesn't pass an argument prompt them!
 
-        // prompt for conformation if output file is being overwritten
-
         // If possible, make arguments, flags and subcommands order-independent.
 
         int frozen = 0;
         int delay = 0;
+
+        char *unknown_flags[8] = {0};
+        int unknown_sz = 0;
 
         int ret = help_check(argc, argv);
         if (ret != 0) {
@@ -65,11 +78,15 @@ static int parse_args(int argc, char *argv[], struct parameters *params) {
                             strcmp("--freeze", argv[i]) == 0) {
                                 frozen = 1;
                                 params->delay = 0;
-                        } else if (strcmp("--delay", argv[i]) == 0) {
+                                continue;
+                        }
+                        if (strcmp("--delay", argv[i]) == 0) {
                                 if (i + 1 >= argc || argv[i + 1][0] == '-') {
-                                        // do nothing?
-                                        // prompt user for number
-                                        printf("\033[93mWarning! \033[0m --delay flag is ignored since it's not followed by a number\n");
+                                        // do nothing or prompt user for number?
+                                        printf(
+                                            "\033[93mWarning! \033[0m --delay "
+                                            "flag is ignored since it's not "
+                                            "followed by a number\n");
                                         continue;
                                 }
 
@@ -82,14 +99,22 @@ static int parse_args(int argc, char *argv[], struct parameters *params) {
 
                                 int val = strtol(argv[i + 1], NULL, 10);
                                 if (val == 0) {
-                                        fprintf(stderr, "\033[91mError!\033[0m --delay flag must be followed by a number, for example: --delay 10\n"
-                                               "You entered: --delay %s\n", argv[i + 1]);
+                                        fprintf(
+                                            stderr,
+                                            "\033[91mError!\033[0m --delay "
+                                            "flag must be followed by a "
+                                            "number, for example: --delay 10\n"
+                                            "You entered: --delay %s\n",
+                                            argv[i + 1]);
                                         return -1;
                                 }
                                 delay = 1;
                                 params->delay = val;
                                 i++;
+                                continue;
                         }
+                        unknown_flags[unknown_sz] = argv[i];
+                        unknown_sz++;
                 } else {
                         if (params->ifile == NULL) {
                                 params->ifile = argv[i];
@@ -101,7 +126,18 @@ static int parse_args(int argc, char *argv[], struct parameters *params) {
 
         if (frozen == 1 && delay == 1) {
                 params->delay = 0;
-                printf("\033[93mWarning! \033[0mThe --frozen (-f) flag takes precedent over the --delay flag when both are used.\n");
+                printf("\033[93mWarning! \033[0mThe --frozen (-f) flag takes "
+                       "precedent over the --delay flag when both are used.\n");
+        }
+
+        if (unknown_sz > 0) {
+                printf("\033[93mWarning! \033[0m Unrecognized flags entered. "
+                       "Please check your spelling.\n");
+                printf("The following flags were not used:");
+                for (int i = 0; i < unknown_sz; i++) {
+                        printf(" %s", unknown_flags[i]);
+                }
+                printf("\n");
         }
 
         return 0;
@@ -285,7 +321,6 @@ static void print_report(int64_t pts) {
                 return;
         }
 
-
         int perc = pts * 100 / duration;
         printf("\033[1A\33[2K\rProgress: %02d%%   ", perc);
 
@@ -392,7 +427,11 @@ int main(int argc, char *argv[]) {
                 return ret;
         }
 
-        printf("\033[1mMotion Extracting\033[0m\n"
+        // prompt for conformation if output file is being overwritten
+        // The video specified for output already exists, write over it?
+        // avio_check()?
+
+        printf("\033[1mMotion Extracting...\033[0m\n"
                "  Input Video: %s\n"
                "  Output Video: %s\n",
                params.ifile, params.ofile);
@@ -515,7 +554,6 @@ int main(int argc, char *argv[]) {
                 goto cleanup;
         }
 
-
         int perc = 100;
         printf("\033[1A\33[2K\rProgress: %02d%%   ", perc);
 
@@ -525,7 +563,6 @@ int main(int argc, char *argv[]) {
         int hours = duration * time_base.num / time_base.den / 3600;
         printf("Time: %02d:%02d:%02d.%02d\n", hours, mins, secs,
                (100 * us * time_base.num) / time_base.den);
-
 
 cleanup:
         av_packet_free(&packet);
