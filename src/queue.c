@@ -1,6 +1,6 @@
 #include "queue.h"
 
-struct queue_node *create_node(AVFrame *frame) {
+struct queue_node *create_node(const AVFrame *frame) {
         struct queue_node *node = malloc(sizeof(*node));
         if (node == NULL) {
                 fprintf(stderr, "ERROR:   Failed to allocate list node");
@@ -46,7 +46,7 @@ void free_queue(struct frame_queue *q) {
         free(q);
 }
 
-AVFrame *frozen(struct frame_queue *q, AVFrame *frame) {
+AVFrame *frozen(struct frame_queue *q, const AVFrame *frame) {
         if (q->head == NULL) {
                 struct queue_node *node = create_node(frame);
                 q->head = node;
@@ -57,8 +57,7 @@ AVFrame *frozen(struct frame_queue *q, AVFrame *frame) {
 }
 
 
-// alwasys returns deep copy
-AVFrame *push_pop_queue(struct frame_queue *q, AVFrame *frame) {
+AVFrame *push_pop_queue(struct frame_queue *q, const AVFrame *frame) {
         if (q->cap == 0) {
                 return frozen(q, frame);
         }

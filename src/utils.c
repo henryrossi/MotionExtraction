@@ -1,6 +1,6 @@
 #include "utils.h"
 
-AVFrame *deep_copy_frame(AVFrame *src) {
+AVFrame *deep_copy_frame(const AVFrame *src) {
         AVFrame *new_frame = av_frame_alloc();
         if (new_frame == NULL) {
                 return NULL;

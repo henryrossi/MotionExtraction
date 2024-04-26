@@ -21,6 +21,6 @@ struct frame_queue *init_queue(int cap);
 
 void free_queue(struct frame_queue *q);
 
-AVFrame *push_pop_queue(struct frame_queue *q, AVFrame *frame);
+AVFrame *push_pop_queue(struct frame_queue *q, const AVFrame *frame);
 
 #endif /* QUEUE_H */
